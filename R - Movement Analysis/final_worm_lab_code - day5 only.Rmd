@@ -1,0 +1,3549 @@
+---
+title: "Final Worm Lab Analysis - Updated – Day 5 Only"
+author: "Jocelyn Dicent"
+date: "2026-04-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(fs)
+library(beepr)
+library(afex)
+library(emmeans)
+library(multcomp)
+library(writexl)
+library(broom)
+```
+
+#Reading in the files
+``` {r reading in the data, cache = TRUE}
+main_dir <- "ARS Videos for Worm Lab/"
+
+# Grab all CSV files, discard BatchExport or csv0 files
+csv_files <- fs::dir_ls(
+  main_dir,
+  recurse = TRUE,
+  regexp = "\\.csv$"
+) %>%
+  discard(~ str_detect(basename(.x), regex("BatchExport|csv0", ignore_case = TRUE)))
+
+# Build metadata table
+metadata <- tibble(file_path = csv_files) %>%
+  mutate(
+    path_split = str_split(file_path, .Platform$file.sep),
+
+    date_folder = map_chr(path_split, ~ .x[length(.x) - 3]),
+    treatment_folder = map_chr(path_split, ~ .x[length(.x) - 2]),
+    video_number = map_chr(path_split, ~ .x[length(.x) - 1]),
+
+    file_name = basename(file_path),
+
+    # Extract date
+    date = str_extract(date_folder, "\\d{8}")
+  ) %>%
+  separate(
+    treatment_folder,
+    into = c("strain", "treatment", "timing"),
+    sep = " - "
+  ) %>%
+  mutate(
+  treatment = case_when(
+    str_to_lower(treatment) == "solv" ~ "Solv Ctrl",
+    TRUE ~ treatment
+  ),
+
+  file_type = case_when(
+      str_detect(file_name, regex("bending angle", ignore_case = TRUE)) ~ "bending_angle",
+      str_detect(file_name, regex("track", ignore_case = TRUE)) ~ "track_summary",
+      str_detect(file_name, regex("omega", ignore_case = TRUE)) ~ "omega_bends",
+      TRUE ~ "unknown"
+    ),
+
+    # Flag duplicate files you do NOT want to keep
+    has_bad_suffix = str_detect(file_name, fixed("SPH-8F86D14-EHS")),
+
+    # Create cleaned name so duplicate versions collapse together
+    file_name_clean = str_remove_all(file_name, fixed("SPH-8F86D14-EHS"))
+  ) %>%
+  group_by(date, strain, treatment, timing, video_number, file_type, file_name_clean) %>%
+  arrange(has_bad_suffix, .by_group = TRUE) %>%
+  slice(1) %>%
+  ungroup() %>%
+  dplyr::select(
+    date,
+    strain,
+    treatment,
+    timing,
+    video_number,
+    file_type,
+    file_name,
+    file_path
+  )
+
+metadata %>%
+  filter(file_type == "unknown") %>%
+  dplyr::select(file_path, file_name)
+
+# Check that the strain labeling is accurate
+metadata %>%
+  filter(!strain %in% c("N2", "BZ555", "UA44")) %>%
+  distinct(strain, file_path)
+
+# Check how many videos each folder has
+metadata %>%
+  filter(file_type != "unknown") %>%
+  count(date, strain, treatment, timing, video_number)
+
+# Function to read & parse WormLab files
+read_wormlab_file <- function(file_path, file_type) {
+  if (file_type == "track_summary") {
+    df <- read_csv(file_path, skip = 1, col_names = FALSE, show_col_types = FALSE)
+
+    df_param <- df[, 1, drop = FALSE]
+    worm_string <- df[[2]]
+
+    worm_data <- str_split(worm_string, pattern = ",", simplify = TRUE)
+    worm_data <- apply(worm_data, 2, as.numeric)
+
+    df_clean <- cbind(df_param, as_tibble(worm_data))
+    n_worms <- ncol(df_clean) - 1
+    colnames(df_clean) <- c("parameter", as.character(seq_len(n_worms)))
+
+    df_clean <- df_clean %>% slice(-(1:2))
+
+    return(df_clean)
+
+  } else if (file_type == "bending_angle") {
+    df <- read_csv(file_path, skip = 2, col_names = FALSE, show_col_types = FALSE)
+
+    df_frame_time <- df[, 1:2]
+    worm_string <- df[[3]]
+
+    worm_data <- str_split(worm_string, pattern = ",", simplify = TRUE)
+    worm_data <- apply(worm_data, 2, as.numeric)
+
+    df_clean <- cbind(df_frame_time, as_tibble(worm_data))
+    n_worms <- ncol(df_clean) - 2
+    colnames(df_clean) <- c("Frame", "Time", as.character(seq_len(n_worms)))
+
+    df_clean <- df_clean %>% slice(-(1:2))
+
+    return(df_clean)
+
+  } else if (file_type == "omega_bends") {
+    df <- read_csv(file_path, skip = 2, col_names = FALSE, show_col_types = FALSE)
+
+    df_frame_time <- df[, 1:2]
+    worm_string <- df[[3]]
+
+    worm_data <- str_split(worm_string, pattern = ",", simplify = TRUE)
+
+    worm_data <- apply(
+      worm_data,
+      2,
+      function(x) ifelse(str_detect(x, regex("Omega Bend", ignore_case = TRUE)), 1, 0)
+    )
+
+    df_clean <- cbind(df_frame_time, as_tibble(worm_data))
+    n_worms <- ncol(df_clean) - 2
+    colnames(df_clean) <- c("Frame", "Time", as.character(seq_len(n_worms)))
+
+    df_clean <- df_clean %>% slice(-(1:2))
+
+    return(df_clean)
+
+  } else {
+    stop("Unknown file type: ", file_type)
+  }
+}
+
+#Apply to all valid files
+
+data_list <- metadata %>%
+  filter(file_type != "unknown") %>%
+  mutate(
+    data = map2(file_path, file_type, read_wormlab_file)
+  )
+```
+
+``` {r splitting by experiment, cache = TRUE}
+#Splitting
+expt_1 <- data_list %>%
+  filter(date %in% c("02092026", "02112026", "02132026"))
+
+expt_2 <- data_list %>%
+  filter(date %in% c("02102026", "02122026", "02142026"))
+
+expt_3 <- data_list %>%
+  filter(date %in% c("02162026", "02182026", "02202026"))
+
+# cleaning up the data further
+get_valid_worms <- function(track_df) {
+
+  durations <- track_df %>%
+    filter(parameter == "Track duration (s)") %>%
+    dplyr::select(-parameter) %>%
+    unlist(use.names = FALSE) %>%
+    as.numeric()
+
+  which(durations >= 29)
+}
+
+filter_worms <- function(df, valid_worms) {
+
+  worm_cols <- as.character(valid_worms)
+
+  if ("Frame" %in% names(df)) {
+    df %>% dplyr::select(Frame, Time, any_of(worm_cols))
+  } else {
+    df %>% dplyr::select(parameter, any_of(worm_cols))
+  }
+}
+
+worms_to_long <- function(df) {
+
+  if ("Frame" %in% names(df)) {
+
+    df %>%
+      pivot_longer(
+        cols = -c(Frame, Time),
+        names_to = "worm",
+        values_to = "value"
+      ) %>%
+      mutate(worm = as.integer(worm))
+
+  } else {
+
+    df %>%
+      pivot_longer(
+        cols = -parameter,
+        names_to = "worm",
+        values_to = "value"
+      ) %>%
+      mutate(worm = as.integer(worm))
+
+  }
+}
+
+expt_1_processed <- expt_1 %>%
+  group_by(date, strain, treatment, timing, video_number) %>%
+  group_modify(~{
+
+    track <- .x %>%
+      filter(file_type == "track_summary") %>%
+      pull(data) %>%
+      .[[1]]
+
+    omega <- .x %>%
+      filter(file_type == "omega_bends") %>%
+      pull(data) %>%
+      .[[1]]
+
+    bend <- .x %>%
+      filter(file_type == "bending_angle") %>%
+      pull(data) %>%
+      .[[1]]
+
+    # Determine worms tracked >= 29 s
+    valid_worms <- get_valid_worms(track)
+
+    # Filter worms
+    track_clean <- filter_worms(track, valid_worms)
+    omega_clean <- filter_worms(omega, valid_worms)
+    bend_clean  <- filter_worms(bend, valid_worms)
+
+    # Convert to long format
+    track_long <- worms_to_long(track_clean)
+    omega_long <- worms_to_long(omega_clean)
+    bend_long  <- worms_to_long(bend_clean)
+
+    tibble(
+      track_summary = list(track_long),
+      omega_bends = list(omega_long),
+      bending_angle = list(bend_long),
+      worms_kept = list(valid_worms)
+    )
+
+  })
+
+expt_2_processed <- expt_2 %>%
+  group_by(date, strain, treatment, timing, video_number) %>%
+  group_modify(~{
+
+    track <- .x %>%
+      filter(file_type == "track_summary") %>%
+      pull(data) %>%
+      .[[1]]
+
+    omega <- .x %>%
+      filter(file_type == "omega_bends") %>%
+      pull(data) %>%
+      .[[1]]
+
+    bend <- .x %>%
+      filter(file_type == "bending_angle") %>%
+      pull(data) %>%
+      .[[1]]
+
+    # Determine worms tracked >= 29 s
+    valid_worms <- get_valid_worms(track)
+
+    # Filter worms
+    track_clean <- filter_worms(track, valid_worms)
+    omega_clean <- filter_worms(omega, valid_worms)
+    bend_clean  <- filter_worms(bend, valid_worms)
+
+    # Convert to long format
+    track_long <- worms_to_long(track_clean)
+    omega_long <- worms_to_long(omega_clean)
+    bend_long  <- worms_to_long(bend_clean)
+
+    tibble(
+      track_summary = list(track_long),
+      omega_bends = list(omega_long),
+      bending_angle = list(bend_long),
+      worms_kept = list(valid_worms)
+    )
+
+  })
+
+expt_3_processed <- expt_3 %>%
+  group_by(date, strain, treatment, timing, video_number) %>%
+  group_modify(~{
+
+    track <- .x %>%
+      filter(file_type == "track_summary") %>%
+      pull(data) %>%
+      .[[1]]
+
+    omega <- .x %>%
+      filter(file_type == "omega_bends") %>%
+      pull(data) %>%
+      .[[1]]
+
+    bend <- .x %>%
+      filter(file_type == "bending_angle") %>%
+      pull(data) %>%
+      .[[1]]
+
+    # Determine worms tracked >= 29 s
+    valid_worms <- get_valid_worms(track)
+
+    # Filter worms
+    track_clean <- filter_worms(track, valid_worms)
+    omega_clean <- filter_worms(omega, valid_worms)
+    bend_clean  <- filter_worms(bend, valid_worms)
+
+    # Convert to long format
+    track_long <- worms_to_long(track_clean)
+    omega_long <- worms_to_long(omega_clean)
+    bend_long  <- worms_to_long(bend_clean)
+
+    tibble(
+      track_summary = list(track_long),
+      omega_bends = list(omega_long),
+      bending_angle = list(bend_long),
+      worms_kept = list(valid_worms)
+    )
+
+  })
+```
+
+``` {r long formats of all, cache = TRUE}
+#Omega Bends
+omega_expt_1 <- expt_1_processed %>%
+  unnest(omega_bends) %>%
+  mutate(expt = "1")
+
+omega_expt_2 <- expt_2_processed %>%
+  unnest(omega_bends) %>%
+  mutate(expt = "2")
+
+omega_expt_3 <- expt_3_processed %>%
+  unnest(omega_bends) %>%
+  mutate(expt = "3")
+
+omega_bends_all <- bind_rows(omega_expt_1, omega_expt_2, omega_expt_3)
+
+#Midpoint Bending Angle
+bending_expt_1 <- expt_1_processed %>%
+  unnest(bending_angle) %>%
+  mutate(expt = "1")
+
+bending_expt_2 <- expt_2_processed %>%
+  unnest(bending_angle) %>%
+  mutate(expt = "2")
+
+bending_expt_3 <- expt_3_processed %>%
+  unnest(bending_angle) %>%
+  mutate(expt = "3")
+
+bending_all <- bind_rows(bending_expt_1, bending_expt_2, bending_expt_3)
+
+#Track Summary
+track_expt_1 <- expt_1_processed %>%
+  unnest(track_summary) %>%
+  mutate(expt = "1")
+
+track_expt_2 <- expt_2_processed %>%
+  unnest(track_summary) %>%
+  mutate(expt = "2")
+
+track_expt_3 <- expt_3_processed %>%
+  unnest(track_summary) %>%
+  mutate(expt = "3")
+
+track_all <- bind_rows(track_expt_1, track_expt_2, track_expt_3)
+```
+
+``` {r plots of worm sizes}
+worm_size <- track_all %>%
+  filter(parameter %in% c("Mean Worm Length (um)", "Mean Width (um)")) %>%
+  pivot_wider(
+    names_from = parameter,
+    values_from = value
+  ) %>%
+  rename(
+    length_um = `Mean Worm Length (um)`,
+    width_um  = `Mean Width (um)`
+  )
+
+set.seed(123)
+
+worm_clusters <- worm_size %>%
+  group_by(strain, treatment, date) %>%
+  group_modify(~{
+
+    dat <- .x
+
+    km <- kmeans(
+      scale(dat[, c("length_um", "width_um")]),
+      centers = 2
+    )
+
+    dat$cluster <- km$cluster
+
+    dat
+  }) %>%
+  ungroup()
+
+ggplot(
+  worm_clusters,
+  aes(x = length_um, y = width_um, color = factor(cluster))
+) +
+  geom_point(alpha = 0.6, size = 2) +
+  facet_grid(strain + treatment ~ date) +
+  theme_bw() +
+  labs(
+    title = "Worm Clusters by Condition",
+    x = "Mean Worm Length (µm)",
+    y = "Mean Worm Width (µm)",
+    color = "Cluster"
+  )
+```
+
+``` {r size-based filtering}
+worm_length <- track_all %>%
+  filter(parameter == "Mean Worm Length (um)") %>%
+  rename(length_um = value)
+
+worms_keep <- worm_length %>%
+  filter(length_um <= 2000)
+
+track_filtered <- track_all %>%
+  semi_join(
+    worms_keep,
+    by = c("date","strain","treatment","timing","video_number","worm")
+  )
+
+omega_filtered <- omega_bends_all %>%
+  semi_join(
+    worms_keep,
+    by = c("date","strain","treatment","timing","video_number","worm")
+  )
+
+bending_filtered <- bending_all %>%
+  semi_join(
+    worms_keep,
+    by = c("date","strain","treatment","timing","video_number","worm")
+  )
+```
+
+``` {r splitting the data}
+track_tca <- track_filtered %>%
+  filter(treatment %in% c("Ctrl", "TCA")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+omega_tca <- omega_filtered %>%
+  filter(treatment %in% c("Ctrl", "TCA")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+bending_tca <- bending_filtered %>%
+  filter(treatment %in% c("Ctrl", "TCA")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+track_tceoh <- track_filtered %>%
+  filter(treatment %in% c("Solv Ctrl", "TCEOH")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+omega_tceoh <- omega_filtered %>%
+  filter(treatment %in% c("Solv Ctrl", "TCEOH")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+bending_tceoh <- bending_filtered %>%
+  filter(treatment %in% c("Solv Ctrl", "TCEOH")) %>%
+  mutate(timing = factor(timing, levels = c("5 min", "30 min"))) %>%
+  mutate(
+    day = case_when(
+      date %in% c("02092026", "02102026", "02162026") ~ "Day 1",
+      date %in% c("02112026", "02122026", "02182026") ~ "Day 3",
+      date %in% c("02132026", "02142026", "02202026") ~ "Day 5",
+      TRUE ~ NA_character_
+    ),
+    expt = case_when(
+      date %in% c("02092026", "02112026", "02132026") ~ "Expt 1",
+      date %in% c("02102026", "02122026", "02142026") ~ "Expt 2",
+      date %in% c("02162026", "02182026", "02202026") ~ "Expt 3",
+      TRUE ~ NA_character_
+    ),
+    day = factor(day, levels = c("Day 1", "Day 3", "Day 5")),
+    expt = factor(expt, levels = c("Expt 1", "Expt 2", "Expt 3"))
+  ) %>%
+  mutate(strain = factor(strain, levels = c("N2", "BZ555", "UA44")))
+
+na_check <- bind_rows(
+  track_tca %>% distinct(date, day, expt),
+  omega_tca %>% distinct(date, day, expt),
+  bending_tca %>% distinct(date, day, expt),
+  track_tceoh %>% distinct(date, day, expt),
+  omega_tceoh %>% distinct(date, day, expt),
+  bending_tceoh %>% distinct(date, day, expt)
+) %>% distinct() %>% filter(is.na(day) | is.na(expt))
+```
+
+``` {r split by day - day 1}
+track_tca_day1 <- track_tca %>%
+  filter(day == "Day 1")
+
+bending_tca_day1 <- bending_tca %>%
+  filter(day == "Day 1")
+
+omega_tca_day1 <- omega_tca %>%
+  filter(day == "Day 1")
+
+track_tceoh_day1 <- track_tceoh %>%
+  filter(day == "Day 1")
+
+bending_tceoh_day1 <- bending_tceoh %>%
+  filter(day == "Day 1")
+
+omega_tceoh_day1 <- omega_tceoh %>%
+  filter(day == "Day 1")
+```
+
+``` {r split by day - day 3}
+track_tca_day3 <- track_tca %>%
+  filter(day == "Day 3")
+
+bending_tca_day3 <- bending_tca %>%
+  filter(day == "Day 3")
+
+omega_tca_day3 <- omega_tca %>%
+  filter(day == "Day 3")
+
+track_tceoh_day3 <- track_tceoh %>%
+  filter(day == "Day 3")
+
+bending_tceoh_day3 <- bending_tceoh %>%
+  filter(day == "Day 3")
+
+omega_tceoh_day3 <- omega_tceoh %>%
+  filter(day == "Day 3")
+```
+
+``` {r split by day - day 5}
+track_tca_day5 <- track_tca %>%
+  filter(day == "Day 5")
+
+bending_tca_day5 <- bending_tca %>%
+  filter(day == "Day 5")
+
+omega_tca_day5 <- omega_tca %>%
+  filter(day == "Day 5")
+
+track_tceoh_day5 <- track_tceoh %>%
+  filter(day == "Day 5")
+
+bending_tceoh_day5 <- bending_tceoh %>%
+  filter(day == "Day 5")
+
+omega_tceoh_day5 <- omega_tceoh %>%
+  filter(day == "Day 5")
+```
+
+#Day 5 Prep
+``` {r use day 5 data only}
+# Overwrite base variables with Day 5 subsets for all downstream analysis
+track_tca     <- track_tca_day5
+bending_tca   <- bending_tca_day5
+omega_tca     <- omega_tca_day5
+track_tceoh   <- track_tceoh_day5
+bending_tceoh <- bending_tceoh_day5
+omega_tceoh   <- omega_tceoh_day5
+```
+
+``` {r create Day 5 output folder}
+dir.create("Day 5", showWarnings = FALSE)
+```
+
+
+#Raw Data Analysis
+##Track Metrics and Stats
+``` {r filtering track metrics - tca}
+track_metrics_tca <- track_tca %>%
+  filter(parameter %in% c(
+    "Absolute Peristaltic Track Length (um) [forward + reversals]",
+    "Peristaltic Speed (um/s) [Absolute peristaltic track length/time]",
+    "Number of Reversals",
+    "Mean Worm Length (um)",
+    "Wavelength (um)",
+    "Turn Count"
+  )) %>%
+  mutate(
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+ylabel_map_raw <- c(
+  "Absolute Peristaltic Track Length (um) [forward + reversals]" = "Track Length (um)",
+  "Peristaltic Speed (um/s) [Absolute peristaltic track length/time]" = "Peristaltic Speed (um/s)",
+  "Number of Reversals" = "Number of Reversals",
+  "Mean Worm Length (um)" = "Mean Worm Length (um)",
+  "Wavelength (um)" = "Wavelength (um)",
+  "Turn Count" = "Turn Count"
+)
+
+track_summary_tca_raw <- track_metrics_tca %>%
+  group_by(parameter, day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    sd_value = sd(value, na.rm = TRUE),
+    n = sum(!is.na(value)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+metrics <- unique(track_summary_tca_raw$parameter)
+```
+
+``` {r stats tests for TCA track metrics - ANOVA}
+track_metrics_tca <- track_metrics_tca %>%
+  mutate(
+    expt_num = gsub("Expt ", "", expt),
+    worm_id = paste(expt_num, strain, treatment, date, video_number, timing, paste0("rep", worm), sep = "_")
+  ) %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(worm_id),
+    value = as.numeric(value)
+  ) 
+
+models_tca_raw <- track_metrics_tca %>%
+  split(.$parameter) %>%
+  map(~ aov_ez(
+    id = "worm_id",
+    dv = "value",
+    between = c("timing", "treatment", "strain"),
+    data = .x,
+    type = 3,
+    white.adjust = TRUE
+  ))
+
+# Residual checks
+residual_checks_tca_raw <- imap(models_tca_raw, ~ {
+  mod <- .x$lm
+  res <- residuals(mod)
+  
+  list(
+    parameter = .y,
+    shapiro = shapiro.test(res),
+    residuals = res
+  )
+})
+
+#Checking normality - fairly normal
+qqnorm(residuals(models_tca_raw[[1]]$lm))
+qqline(residuals(models_tca_raw[[1]]$lm))
+
+qqnorm(residuals(models_tca_raw[[2]]$lm))
+qqline(residuals(models_tca_raw[[2]]$lm))
+
+qqnorm(residuals(models_tca_raw[[3]]$lm))
+qqline(residuals(models_tca_raw[[3]]$lm))
+
+qqnorm(residuals(models_tca_raw[[4]]$lm))
+qqline(residuals(models_tca_raw[[4]]$lm))
+
+qqnorm(residuals(models_tca_raw[[5]]$lm))
+qqline(residuals(models_tca_raw[[5]]$lm))
+
+qqnorm(residuals(models_tca_raw[[6]]$lm))
+qqline(residuals(models_tca_raw[[6]]$lm))
+```
+
+``` {r CLD for TCA track metrics}
+cld_tca_raw <- models_tca_raw %>%
+  imap_dfr(~ {
+    emmeans(.x, ~ treatment * strain * timing) %>%
+      cld(adjust = "sidak", Letters = letters) %>%
+      as.data.frame()
+  }, .id = "parameter") %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting track metrics - tca}
+# Prep CLD labels with y positions
+cld_labels <- cld_tca_raw %>%
+  left_join(
+    track_summary_tca_raw %>%
+      dplyr::select(parameter, strain, treatment, timing, mean_value, se_value),
+    by = c("parameter", "strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+plots_raw <- lapply(metrics, function(m) {
+  df <- track_summary_tca_raw %>% filter(parameter == m)
+  cld_df <- cld_labels %>% filter(parameter == m)
+  
+  y_lab <- if (m %in% names(ylabel_map_raw)) ylabel_map_raw[m] else "Value"
+  
+  ggplot(df, aes(x = treatment, y = mean_value, fill = timing)) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7,
+      color = "black",
+      linewidth = 0.5
+    ) +
+    geom_errorbar(
+      aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+      position = position_dodge(width = 0.8),
+      width = 0.2,
+      linewidth = 0.5
+    ) +
+    geom_text(
+      data = cld_df,
+      aes(x = treatment, y = label_y, label = .group, group = timing),
+      position = position_dodge(width = 0.8),
+      vjust = -0.5,
+      size = 3.5,
+      inherit.aes = FALSE
+    ) +
+    facet_wrap(~strain) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      expand = expansion(mult = c(0, 0.15))
+    ) +
+    scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+    labs(
+      x = "Treatment",
+      y = y_lab,
+      fill = "Timing",
+      title = m
+    ) +
+    theme_classic(base_size = 14) +
+    theme(
+      panel.spacing = unit(1, "lines"),
+      axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+      axis.text.y = element_text(color = "black"),
+      axis.title = element_text(color = "black"),
+      strip.text = element_text(size = 10, color = "black"),
+      axis.line = element_line(linewidth = 0.6, color = "black"),
+      axis.ticks = element_line(linewidth = 0.6, color = "black"),
+      legend.position = "right"
+    )
+})
+
+plots_raw[[1]]
+plots_raw[[2]]
+plots_raw[[3]]
+plots_raw[[4]]
+plots_raw[[5]]
+plots_raw[[6]]
+
+for (i in seq_along(plots_raw)) {
+  ggsave(
+    filename = paste0("Day 5/track_tca_raw_", i, ".png"),
+    plot = plots_raw[[i]],
+    width = 8,
+    height = 6,
+    units = "in",
+    dpi = 300
+  )
+}
+```
+
+``` {r fitering track metrics - tceoh}
+track_metrics_tceoh <- track_tceoh %>%
+  filter(parameter %in% c(
+    "Absolute Peristaltic Track Length (um) [forward + reversals]",
+    "Peristaltic Speed (um/s) [Absolute peristaltic track length/time]",
+    "Number of Reversals",
+    "Mean Worm Length (um)",
+    "Wavelength (um)",
+    "Turn Count"
+  )) %>%
+  mutate(
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+ylabel_map_raw <- c(
+  "Absolute Peristaltic Track Length (um) [forward + reversals]" = "Track Length (um)",
+  "Peristaltic Speed (um/s) [Absolute peristaltic track length/time]" = "Peristaltic Speed (um/s)",
+  "Number of Reversals" = "Number of Reversals",
+  "Mean Worm Length (um)" = "Mean Worm Length (um)",
+  "Wavelength (um)" = "Wavelength (um)",
+  "Turn Count" = "Turn Count"
+)
+
+track_summary_tceoh_raw <- track_metrics_tceoh %>%
+  group_by(parameter, day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(value, na.rm = TRUE),
+    sd_value = sd(value, na.rm = TRUE),
+    n = sum(!is.na(value)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+metrics <- unique(track_summary_tceoh_raw$parameter)
+```
+
+``` {r stats tests for TCEOH track metrics - ANOVA}
+track_metrics_tceoh <- track_metrics_tceoh %>%
+  mutate(
+    expt_num = gsub("Expt ", "", expt),
+    worm_id = paste(expt_num, strain, treatment, date, video_number, timing, paste0("rep", worm), sep = "_")
+  ) %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(worm_id),
+    value = as.numeric(value)
+  )
+
+models_tceoh_raw <- track_metrics_tceoh %>%
+  split(.$parameter) %>%
+  map(~ aov_ez(
+    id = "worm_id",
+    dv = "value",
+    between = c("timing", "treatment", "strain"),
+    data = .x,
+    type = 3,
+    white.adjust = TRUE
+  ))
+
+residual_checks_tceoh_raw <- imap(models_tceoh_raw, ~ {
+  mod <- .x$lm
+  res <- residuals(mod)
+  
+  list(
+    parameter = .y,
+    shapiro = shapiro.test(res),
+    residuals = res
+  )
+})
+
+#Checking normality - fairly normal
+qqnorm(residuals(models_tceoh_raw[[1]]$lm))
+qqline(residuals(models_tceoh_raw[[1]]$lm))
+
+qqnorm(residuals(models_tceoh_raw[[2]]$lm))
+qqline(residuals(models_tceoh_raw[[2]]$lm))
+
+qqnorm(residuals(models_tceoh_raw[[3]]$lm))
+qqline(residuals(models_tceoh_raw[[3]]$lm))
+
+qqnorm(residuals(models_tceoh_raw[[4]]$lm))
+qqline(residuals(models_tceoh_raw[[4]]$lm))
+
+qqnorm(residuals(models_tceoh_raw[[5]]$lm))
+qqline(residuals(models_tceoh_raw[[5]]$lm))
+
+qqnorm(residuals(models_tceoh_raw[[6]]$lm))
+qqline(residuals(models_tceoh_raw[[6]]$lm))
+```
+
+``` {r CLD for TCEOH track metrics}
+cld_tceoh_raw <- models_tceoh_raw %>%
+  imap_dfr(~ {
+    emmeans(.x, ~ treatment * strain * timing) %>%
+      cld(adjust = "sidak", Letters = letters) %>%
+      as.data.frame()
+  }, .id = "parameter") %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting track metrics - tceoh}
+# Prep CLD labels with y positions
+cld_labels_tceoh <- cld_tceoh_raw %>%
+  left_join(
+    track_summary_tceoh_raw %>%
+      dplyr::select(parameter, strain, treatment, timing, mean_value, se_value),
+    by = c("parameter", "strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+plots_raw_tceoh <- lapply(metrics, function(m) {
+  df <- track_summary_tceoh_raw %>% filter(parameter == m)
+  cld_df <- cld_labels_tceoh %>% filter(parameter == m)
+  
+  y_lab <- if (m %in% names(ylabel_map_raw)) ylabel_map_raw[m] else "Value"
+  
+  ggplot(df, aes(x = treatment, y = mean_value, fill = timing)) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7,
+      color = "black",
+      linewidth = 0.5
+    ) +
+    geom_errorbar(
+      aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+      position = position_dodge(width = 0.8),
+      width = 0.2,
+      linewidth = 0.5
+    ) +
+    geom_text(
+      data = cld_df,
+      aes(x = treatment, y = label_y, label = .group, group = timing),
+      position = position_dodge(width = 0.8),
+      vjust = -0.5,
+      size = 3.5,
+      inherit.aes = FALSE
+    ) +
+    facet_wrap(~strain) +
+    scale_y_continuous(
+      limits = c(0, NA),
+      expand = expansion(mult = c(0, 0.15))
+    ) +
+    scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+    labs(
+      x = "Treatment",
+      y = y_lab,
+      fill = "Timing",
+      title = m
+    ) +
+    theme_classic(base_size = 14) +
+    theme(
+      panel.spacing = unit(1, "lines"),
+      axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+      axis.text.y = element_text(color = "black"),
+      axis.title = element_text(color = "black"),
+      strip.text = element_text(size = 10, color = "black"),
+      axis.line = element_line(linewidth = 0.6, color = "black"),
+      axis.ticks = element_line(linewidth = 0.6, color = "black"),
+      legend.position = "right"
+    )
+})
+
+plots_raw_tceoh[[1]]
+plots_raw_tceoh[[2]]
+plots_raw_tceoh[[3]]
+plots_raw_tceoh[[4]]
+plots_raw_tceoh[[5]]
+plots_raw_tceoh[[6]]
+
+for (i in seq_along(plots_raw_tceoh)) {
+  ggsave(
+    filename = paste0("Day 5/track_tceoh_raw_", i, ".png"),
+    plot = plots_raw_tceoh[[i]],
+    width = 8,
+    height = 6,
+    units = "in",
+    dpi = 300
+  )
+}
+```
+
+``` {r export stats}
+anova_track_tca_raw_df <- imap_dfr(models_tca_raw, ~
+  as.data.frame(nice(.x)) %>%
+    mutate(parameter = .y, .before = 1)
+)
+
+anova_track_tceoh_raw_df <- imap_dfr(models_tceoh_raw, ~
+  as.data.frame(nice(.x)) %>%
+    mutate(parameter = .y, .before = 1)
+)
+  
+#Shapiro
+shapiro_track_tca_raw_df <- imap_dfr(residual_checks_tca_raw, ~
+  tibble(
+    parameter = .y,
+    statistic = unname(.x$shapiro$statistic),
+    p_value = .x$shapiro$p.value
+  )
+)
+
+shapiro_track_tceoh_raw_df <- imap_dfr(residual_checks_tceoh_raw, ~
+  tibble(
+    parameter = .y,
+    statistic = unname(.x$shapiro$statistic),
+    p_value = .x$shapiro$p.value
+  )
+)
+
+#Export
+write_xlsx(
+  list(
+    anova_track_tca_raw = anova_track_tca_raw_df,
+    anova_track_tceoh_raw = anova_track_tceoh_raw_df,
+
+    shapiro_track_tca_raw = shapiro_track_tca_raw_df,
+    shapiro_track_tceoh_raw = shapiro_track_tceoh_raw_df
+  ),
+  "Day 5/track_metrics_raw_stats.xlsx"
+)
+```
+
+##Omega Events and Stats
+``` {r compute omega events and durations}
+# Helper: count events lasting >= min_frames consecutive frames
+count_bend_events_min_duration <- function(x, min_frames = 7) {
+  x <- as.integer(x)
+  x[is.na(x)] <- 0L
+  r <- rle(x)
+  sum(r$values == 1L & r$lengths >= min_frames)
+}
+
+# Helper: return durations (in frames) of qualifying events
+get_event_durations <- function(x, min_frames = 7) {
+  x <- as.integer(x)
+  x[is.na(x)] <- 0L
+  r <- rle(x)
+  as.numeric(r$lengths[r$values == 1L & r$lengths >= min_frames])
+}
+
+#Omega events per worm
+omega_events_tca <- omega_tca %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    n_omega_events = count_bend_events_min_duration(value, 7),
+    .groups = "drop"
+  )
+
+omega_events_summary_tca <- omega_events_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(n_omega_events, na.rm = TRUE),
+    sd_value   = sd(n_omega_events,   na.rm = TRUE),
+    n          = sum(!is.na(n_omega_events)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+omega_events_tceoh <- omega_tceoh %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    n_omega_events = count_bend_events_min_duration(value, 7),
+    .groups = "drop"
+  )
+
+omega_events_summary_tceoh <- omega_events_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(n_omega_events, na.rm = TRUE),
+    sd_value   = sd(n_omega_events,   na.rm = TRUE),
+    n          = sum(!is.na(n_omega_events)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+#Omega durations
+omega_duration_tca <- omega_tca %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    durations_frames = list(get_event_durations(value, min_frames = 7)),
+    .groups = "drop"
+  ) %>%
+  mutate(durations_sec = map(durations_frames, ~ .x / 7))
+
+# With zeros (worms with no events get mean_duration = 0)
+omega_duration_summary_tca <- omega_duration_tca %>%
+  mutate(
+    mean_duration   = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else mean(.x)),
+    median_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else median(.x)),
+    n_events        = map_int(durations_sec, length)
+  )
+
+omega_duration_summary_plot_tca <- omega_duration_summary_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+# Without zeros
+omega_duration_summary_tca_nonzero <- omega_duration_tca %>%
+  mutate(
+    mean_duration   = map_dbl(durations_sec, ~ if (length(.x) == 0) NA_real_ else mean(.x)),
+    median_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) NA_real_ else median(.x)),
+    n_events        = map_int(durations_sec, length)
+  )
+
+omega_duration_summary_plot_tca_nonzero <- omega_duration_summary_tca_nonzero %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+omega_duration_tceoh <- omega_tceoh %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    durations_frames = list(get_event_durations(value, min_frames = 7)),
+    .groups = "drop"
+  ) %>%
+  mutate(durations_sec = map(durations_frames, ~ .x / 7))
+
+omega_duration_summary_tceoh <- omega_duration_tceoh %>%
+  mutate(
+    mean_duration   = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else mean(.x)),
+    median_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else median(.x)),
+    n_events        = map_int(durations_sec, length)
+  )
+
+omega_duration_summary_plot_tceoh <- omega_duration_summary_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+omega_duration_summary_tceoh_nonzero <- omega_duration_tceoh %>%
+  mutate(
+    mean_duration   = map_dbl(durations_sec, ~ if (length(.x) == 0) NA_real_ else mean(.x)),
+    median_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) NA_real_ else median(.x)),
+    n_events        = map_int(durations_sec, length)
+  )
+
+omega_duration_summary_plot_tceoh_nonzero <- omega_duration_summary_tceoh_nonzero %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r stats for omega events - tca}
+omega_events_tca <- omega_events_tca %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_omega_tca <- aov_ez(
+  id = "worm_id",
+  dv = "n_omega_events",
+  between = c("timing", "treatment", "strain"),
+  data = omega_events_tca,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_binary_tca <- omega_events_tca %>%
+  mutate(
+    any_omega = factor(if_else(n_omega_events > 0, 1, 0))
+  )
+
+model_omega_binary_tca <- glm(
+  any_omega ~ timing * treatment * strain,
+  data = omega_binary_tca,
+  family = binomial
+)
+
+omega_residual_checks_tca <- list(
+  parameter = "omega_events",
+  shapiro = shapiro.test(residuals(model_omega_tca$lm)),
+  residuals = residuals(model_omega_tca$lm)
+)
+
+qqnorm(residuals(model_omega_tca$lm))
+qqline(residuals(model_omega_tca$lm))
+```
+
+``` {r CLD for omega events - tca}
+cld_omega_tca <- emmeans(model_omega_tca, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega events - tca}
+cld_labels_omega_tca <- cld_omega_tca %>%
+  left_join(
+    omega_events_summary_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+omega_events_plot_tca <- ggplot(
+  omega_events_summary_tca,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    color = "black",
+    linewidth = 0.5
+  ) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8),
+    width = 0.2,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_omega_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5,
+    size = 3.5,
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(
+    x = "Treatment",
+    y = "Number of Omega Bends",
+    title = "Number of Omega Bend Events",
+    fill = "Timing"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_events_plot_tca
+
+ggsave(
+  filename = "Day 5/omega_events_tca.png",
+  plot = omega_events_plot_tca,
+  width = 8, height = 6, units = "in", dpi = 300
+)
+```
+
+``` {r stats for omega events - tceoh}
+omega_events_tceoh <- omega_events_tceoh %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_omega_tceoh <- aov_ez(
+  id = "worm_id",
+  dv = "n_omega_events",
+  between = c("timing", "treatment", "strain"),
+  data = omega_events_tceoh,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_binary_tceoh <- omega_events_tceoh %>%
+  mutate(
+    any_omega = factor(if_else(n_omega_events > 0, 1, 0))
+  )
+
+model_omega_binary_tceoh <- glm(
+  any_omega ~ timing * treatment * strain,
+  data = omega_binary_tceoh,
+  family = binomial
+)
+
+omega_residual_checks_tceoh <- list(
+  parameter = "omega_events",
+  shapiro = shapiro.test(residuals(model_omega_tceoh$lm)),
+  residuals = residuals(model_omega_tceoh$lm)
+)
+
+qqnorm(residuals(model_omega_tceoh$lm))
+qqline(residuals(model_omega_tceoh$lm))
+```
+
+``` {r CLD for omega events - tceoh}
+cld_omega_tceoh <- emmeans(model_omega_tceoh, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega events - tceoh}
+cld_labels_omega_tceoh <- cld_omega_tceoh %>%
+  left_join(
+    omega_events_summary_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+omega_events_plot_tceoh <- ggplot(
+  omega_events_summary_tceoh,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    color = "black",
+    linewidth = 0.5
+  ) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8),
+    width = 0.2,
+    linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_omega_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5,
+    size = 3.5,
+    inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(
+    x = "Treatment",
+    y = "Number of Omega Bends",
+    title = "Number of Omega Bend Events",
+    fill = "Timing"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_events_plot_tceoh
+
+ggsave(
+  filename = "Day 5/omega_events_tceoh.png",
+  plot = omega_events_plot_tceoh,
+  width = 8, height = 6, units = "in", dpi = 300
+)
+```
+
+##Omega Durations and Stats
+``` {r stats for omega durations - tca}
+omega_duration_summary_tca <- omega_duration_summary_tca %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_duration_tca <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = omega_duration_summary_tca,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_duration_summary_tca_nonzero <- omega_duration_summary_tca_nonzero %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_duration_tca_nonzero <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = omega_duration_summary_tca_nonzero,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_duration_residual_checks_tca <- list(
+  with_zeros = list(
+    parameter = "omega_duration_with_zeros",
+    shapiro = shapiro.test(residuals(model_duration_tca$lm)),
+    residuals = residuals(model_duration_tca$lm)
+  ),
+  without_zeros = list(
+    parameter = "omega_duration_nonzero",
+    shapiro = shapiro.test(residuals(model_duration_tca_nonzero$lm)),
+    residuals = residuals(model_duration_tca_nonzero$lm)
+  )
+)
+
+qqnorm(residuals(model_duration_tca$lm))
+qqline(residuals(model_duration_tca$lm))
+
+qqnorm(residuals(model_duration_tca_nonzero$lm))
+qqline(residuals(model_duration_tca_nonzero$lm))
+```
+
+``` {r CLD for omega durations - tca}
+cld_duration_tca <- emmeans(model_duration_tca, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_duration_tca_nonzero <- emmeans(model_duration_tca_nonzero, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega durations - tca}
+cld_labels_duration_tca <- cld_duration_tca %>%
+  left_join(
+    omega_duration_summary_plot_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_duration_tca_nonzero <- cld_duration_tca_nonzero %>%
+  left_join(
+    omega_duration_summary_plot_tca_nonzero %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+omega_duration_plot_tca <- ggplot(
+  omega_duration_summary_plot_tca,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_duration_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Duration of Omega Bends (s)",
+       title = "Duration of Omega Bend Events (0s Included)", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_duration_plot_tca_nonzero <- ggplot(
+  omega_duration_summary_plot_tca_nonzero,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_duration_tca_nonzero,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Duration of Omega Bends (s)",
+       title = "Duration of Omega Bend Events (Nonzero Worms Only)", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_duration_plot_tca
+omega_duration_plot_tca_nonzero
+
+ggsave("Day 5/omega_duration_tca_including_zeros.png", omega_duration_plot_tca,
+       width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/omega_duration_tca_nonzero_only.png", omega_duration_plot_tca_nonzero,
+       width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r stats for omega durations - tceoh}
+omega_duration_summary_tceoh <- omega_duration_summary_tceoh %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_duration_tceoh <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = omega_duration_summary_tceoh,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_duration_summary_tceoh_nonzero <- omega_duration_summary_tceoh_nonzero %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_duration_tceoh_nonzero <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = omega_duration_summary_tceoh_nonzero,
+  type = 3,
+  white.adjust = TRUE
+)
+
+omega_duration_residual_checks_tceoh <- list(
+  with_zeros = list(
+    parameter = "omega_duration_with_zeros",
+    shapiro = shapiro.test(residuals(model_duration_tceoh$lm)),
+    residuals = residuals(model_duration_tceoh$lm)
+  ),
+  without_zeros = list(
+    parameter = "omega_duration_nonzero",
+    shapiro = shapiro.test(residuals(model_duration_tceoh_nonzero$lm)),
+    residuals = residuals(model_duration_tceoh_nonzero$lm)
+  )
+)
+
+qqnorm(residuals(model_duration_tceoh$lm))
+qqline(residuals(model_duration_tceoh$lm))
+
+qqnorm(residuals(model_duration_tceoh_nonzero$lm))
+qqline(residuals(model_duration_tceoh_nonzero$lm))
+```
+
+``` {r CLD for omega durations - tceoh}
+cld_duration_tceoh <- emmeans(model_duration_tceoh, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_duration_tceoh_nonzero <- emmeans(model_duration_tceoh_nonzero, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega durations - tceoh}
+cld_labels_duration_tceoh <- cld_duration_tceoh %>%
+  left_join(
+    omega_duration_summary_plot_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_duration_tceoh_nonzero <- cld_duration_tceoh_nonzero %>%
+  left_join(
+    omega_duration_summary_plot_tceoh_nonzero %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+omega_duration_plot_tceoh <- ggplot(
+  omega_duration_summary_plot_tceoh,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_duration_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Duration of Omega Bends (s)",
+       title = "Duration of Omega Bend Events (0s Included)", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_duration_plot_tceoh_nonzero <- ggplot(
+  omega_duration_summary_plot_tceoh_nonzero,
+  aes(x = treatment, y = mean_value, fill = timing)
+) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(width = 0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_duration_tceoh_nonzero,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8), vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Duration of Omega Bends (s)",
+       title = "Duration of Omega Bend Events (Nonzero Worms Only)", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+omega_duration_plot_tceoh
+omega_duration_plot_tceoh_nonzero
+
+ggsave("Day 5/omega_duration_tceoh_including_zeros.png", omega_duration_plot_tceoh,
+       width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/omega_duration_tceoh_nonzero_only.png", omega_duration_plot_tceoh_nonzero,
+       width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r export omega stats}
+anova_omega_events_tca_df <- nice(model_omega_tca) %>% as.data.frame()
+anova_omega_events_tceoh_df <- nice(model_omega_tceoh) %>% as.data.frame()
+anova_omega_duration_tca_df <- nice(model_duration_tca) %>% as.data.frame()
+anova_omega_duration_tca_nonzero_df <- nice(model_duration_tca_nonzero) %>% as.data.frame()
+anova_omega_duration_tceoh_df <- nice(model_duration_tceoh) %>% as.data.frame()
+anova_omega_duration_tceoh_nonzero_df <- nice(model_duration_tceoh_nonzero) %>% as.data.frame()
+
+glm_omega_tca_df <- broom::tidy(model_omega_binary_tca)
+glm_omega_tceoh_df <- broom::tidy(model_omega_binary_tceoh)
+
+shapiro_omega_events_tca_df <- tibble(
+  parameter = "omega_events_tca",
+  statistic = unname(omega_residual_checks_tca$shapiro$statistic),
+  p_value = omega_residual_checks_tca$shapiro$p.value
+)
+
+shapiro_omega_events_tceoh_df <- tibble(
+  parameter = "omega_events_tceoh",
+  statistic = unname(omega_residual_checks_tceoh$shapiro$statistic),
+  p_value = omega_residual_checks_tceoh$shapiro$p.value
+)
+
+shapiro_omega_duration_tca_df <- bind_rows(
+  tibble(parameter = "with_zeros",
+         statistic = unname(omega_duration_residual_checks_tca$with_zeros$shapiro$statistic),
+         p_value = omega_duration_residual_checks_tca$with_zeros$shapiro$p.value),
+  tibble(parameter = "without_zeros",
+         statistic = unname(omega_duration_residual_checks_tca$without_zeros$shapiro$statistic),
+         p_value = omega_duration_residual_checks_tca$without_zeros$shapiro$p.value)
+)
+
+shapiro_omega_duration_tceoh_df <- bind_rows(
+  tibble(parameter = "with_zeros",
+         statistic = unname(omega_duration_residual_checks_tceoh$with_zeros$shapiro$statistic),
+         p_value = omega_duration_residual_checks_tceoh$with_zeros$shapiro$p.value),
+  tibble(parameter = "without_zeros",
+         statistic = unname(omega_duration_residual_checks_tceoh$without_zeros$shapiro$statistic),
+         p_value = omega_duration_residual_checks_tceoh$without_zeros$shapiro$p.value)
+)
+
+write_xlsx(
+  list(
+    anova_omega_events_tca = anova_omega_events_tca_df,
+    anova_omega_events_tceoh = anova_omega_events_tceoh_df,
+    glm_omega_events_tca = glm_omega_tca_df,
+    glm_omega_events_tceoh = glm_omega_tceoh_df,
+    shapiro_omega_events_tca = shapiro_omega_events_tca_df,
+    shapiro_omega_events_tceoh = shapiro_omega_events_tceoh_df,
+    cld_omega_events_tca = cld_omega_tca,
+    cld_omega_events_tceoh = cld_omega_tceoh,
+    anova_omega_duration_tca = anova_omega_duration_tca_df,
+    anova_omega_duration_tca_nonzero = anova_omega_duration_tca_nonzero_df,
+    anova_omega_duration_tceoh = anova_omega_duration_tceoh_df,
+    anova_omega_duration_tceoh_nonzero = anova_omega_duration_tceoh_nonzero_df,
+    shapiro_omega_duration_tca = shapiro_omega_duration_tca_df,
+    shapiro_omega_duration_tceoh = shapiro_omega_duration_tceoh_df,
+    cld_omega_duration_tca = cld_duration_tca,
+    cld_omega_duration_tca_nonzero = cld_duration_tca_nonzero,
+    cld_omega_duration_tceoh = cld_duration_tceoh,
+    cld_omega_duration_tceoh_nonzero = cld_duration_tceoh_nonzero
+  ),
+  "Day 5/omega_all_stats.xlsx"
+)
+```
+
+##High-angled Bend Events and Stats
+``` {r compute bend90 events and durations}
+#High-angled bend (>=90 deg) events per worm
+bend90_events_tca <- bending_tca %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44")),
+    bend90 = if_else(abs(value) >= 90, 1L, 0L)
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    n_bend90_events = count_bend_events_min_duration(bend90, min_frames = 7),
+    .groups = "drop"
+  )
+
+bend90_events_summary_tca <- bend90_events_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(n_bend90_events, na.rm = TRUE),
+    sd_value   = sd(n_bend90_events,   na.rm = TRUE),
+    n          = sum(!is.na(n_bend90_events)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+bend90_events_tceoh <- bending_tceoh %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44")),
+    bend90 = if_else(abs(value) >= 90, 1L, 0L)
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    n_bend90_events = count_bend_events_min_duration(bend90, min_frames = 7),
+    .groups = "drop"
+  )
+
+bend90_events_summary_tceoh <- bend90_events_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(n_bend90_events, na.rm = TRUE),
+    sd_value   = sd(n_bend90_events,   na.rm = TRUE),
+    n          = sum(!is.na(n_bend90_events)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+#High-angled bend durations per worm
+bending_duration_tca <- bending_tca %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44")),
+    bend90 = if_else(abs(value) >= 90, 1L, 0L)
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    durations_frames = list(get_event_durations(bend90, min_frames = 7)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    durations_sec = map(durations_frames, ~ .x / 7),
+    mean_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else mean(.x))
+  )
+
+bending_duration_summary_tca <- bending_duration_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+bending_duration_tceoh <- bending_tceoh %>%
+  mutate(
+    Time  = as.numeric(Time),
+    value = as.numeric(value),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    day    = factor(day,    levels = c("Day 1", "Day 3", "Day 5")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44")),
+    bend90 = if_else(abs(value) >= 90, 1L, 0L)
+  ) %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  arrange(Time, .by_group = TRUE) %>%
+  summarise(
+    durations_frames = list(get_event_durations(bend90, min_frames = 7)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    durations_sec = map(durations_frames, ~ .x / 7),
+    mean_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else mean(.x))
+  )
+
+bending_duration_summary_tceoh <- bending_duration_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(mean_duration, na.rm = TRUE),
+    sd_value   = sd(mean_duration,   na.rm = TRUE),
+    n          = sum(!is.na(mean_duration)),
+    se_value   = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r stats for bend90 events - tca}
+bend90_events_tca <- bend90_events_tca %>%
+  mutate(
+    treatment = factor(treatment),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_bend90_events_tca <- aov_ez(
+  id = "worm_id",
+  dv = "n_bend90_events",
+  between = c("timing", "treatment", "strain"),
+  data = bend90_events_tca,
+  type = 3,
+  white.adjust = TRUE
+)
+
+bend90_events_residual_checks_tca <- list(
+  parameter = "bend90_events_tca",
+  shapiro = shapiro.test(residuals(model_bend90_events_tca$lm)),
+  residuals = residuals(model_bend90_events_tca$lm)
+)
+
+qqnorm(residuals(model_bend90_events_tca$lm))
+qqline(residuals(model_bend90_events_tca$lm))
+```
+
+``` {r CLD for bend90 events - tca}
+cld_bend90_events_tca <- emmeans(model_bend90_events_tca, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 events - tca}
+cld_labels_bend90_events_tca <- cld_bend90_events_tca %>%
+  left_join(
+    bend90_events_summary_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p1 <- ggplot(bend90_events_summary_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_bend90_events_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Number of ≥90° Bend Events",
+       title = "Number of ≥90° Bend Events", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p1
+
+ggsave("Day 5/bend90_events_tca.png", p1, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r stats for bend90 events - tceoh}
+bend90_events_tceoh <- bend90_events_tceoh %>%
+  mutate(
+    treatment = factor(treatment),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_bend90_events_tceoh <- aov_ez(
+  id = "worm_id",
+  dv = "n_bend90_events",
+  between = c("timing", "treatment", "strain"),
+  data = bend90_events_tceoh,
+  type = 3,
+  white.adjust = TRUE
+)
+
+bend90_events_residual_checks_tceoh <- list(
+  parameter = "bend90_events_tceoh",
+  shapiro = shapiro.test(residuals(model_bend90_events_tceoh$lm)),
+  residuals = residuals(model_bend90_events_tceoh$lm)
+)
+
+qqnorm(residuals(model_bend90_events_tceoh$lm))
+qqline(residuals(model_bend90_events_tceoh$lm))
+```
+
+``` {r CLD for bend90 events - tceoh}
+cld_bend90_events_tceoh <- emmeans(model_bend90_events_tceoh, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 events - tceoh}
+cld_labels_bend90_events_tceoh <- cld_bend90_events_tceoh %>%
+  left_join(
+    bend90_events_summary_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p2 <- ggplot(bend90_events_summary_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_bend90_events_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Number of ≥90° Bend Events",
+       title = "Number of ≥90° Bend Events", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p2
+
+ggsave("Day 5/bend90_events_tceoh.png", p2, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+##High-angled Bend Durations and Stats
+``` {r stats for bend90 duration - tca}
+bending_duration_tca <- bending_duration_tca %>%
+  mutate(
+    treatment = factor(treatment),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_bend90_duration_tca <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = bending_duration_tca,
+  type = 3,
+  white.adjust = TRUE
+)
+
+bend90_duration_residual_checks_tca <- list(
+  parameter = "bend90_duration_tca",
+  shapiro = shapiro.test(residuals(model_bend90_duration_tca$lm)),
+  residuals = residuals(model_bend90_duration_tca$lm)
+)
+
+qqnorm(residuals(model_bend90_duration_tca$lm))
+qqline(residuals(model_bend90_duration_tca$lm))
+```
+
+``` {r CLD for bend90 duration - tca}
+cld_bend90_duration_tca <- emmeans(model_bend90_duration_tca, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 duration - tca}
+cld_labels_bend90_duration_tca <- cld_bend90_duration_tca %>%
+  left_join(
+    bending_duration_summary_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p3 <- ggplot(bending_duration_summary_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_bend90_duration_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Bend Duration (s)",
+       title = "Duration of High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p3
+
+ggsave("Day 5/bend90_duration_tca.png", p3, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r stats for bend90 duration - tceoh}
+bending_duration_tceoh <- bending_duration_tceoh %>%
+  mutate(
+    treatment = factor(treatment),
+    worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_"))
+  )
+
+model_bend90_duration_tceoh <- aov_ez(
+  id = "worm_id",
+  dv = "mean_duration",
+  between = c("timing", "treatment", "strain"),
+  data = bending_duration_tceoh,
+  type = 3,
+  white.adjust = TRUE
+)
+
+bend90_duration_residual_checks_tceoh <- list(
+  parameter = "bend90_duration_tceoh",
+  shapiro = shapiro.test(residuals(model_bend90_duration_tceoh$lm)),
+  residuals = residuals(model_bend90_duration_tceoh$lm)
+)
+
+qqnorm(residuals(model_bend90_duration_tceoh$lm))
+qqline(residuals(model_bend90_duration_tceoh$lm))
+```
+
+``` {r CLD for bend90 duration - tceoh}
+cld_bend90_duration_tceoh <- emmeans(model_bend90_duration_tceoh, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 duration - tceoh}
+cld_labels_bend90_duration_tceoh <- cld_bend90_duration_tceoh %>%
+  left_join(
+    bending_duration_summary_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p4 <- ggplot(bending_duration_summary_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(
+    aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+    position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+  ) +
+  geom_text(
+    data = cld_labels_bend90_duration_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Bend Duration (s)",
+       title = "Duration of High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p4
+
+ggsave("Day 5/bend90_duration_tceoh.png", p4, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r export bend90 stats}
+anova_bend90_events_tca_df <- as.data.frame(nice(model_bend90_events_tca))
+anova_bend90_events_tceoh_df <- as.data.frame(nice(model_bend90_events_tceoh))
+anova_bend90_duration_tca_df <- as.data.frame(nice(model_bend90_duration_tca))
+anova_bend90_duration_tceoh_df <- as.data.frame(nice(model_bend90_duration_tceoh))
+
+shapiro_bend90_events_tca_df <- tibble(
+  parameter = "bend90_events_tca",
+  statistic = unname(bend90_events_residual_checks_tca$shapiro$statistic),
+  p_value = bend90_events_residual_checks_tca$shapiro$p.value
+)
+
+shapiro_bend90_events_tceoh_df <- tibble(
+  parameter = "bend90_events_tceoh",
+  statistic = unname(bend90_events_residual_checks_tceoh$shapiro$statistic),
+  p_value = bend90_events_residual_checks_tceoh$shapiro$p.value
+)
+
+shapiro_bend90_duration_tca_df <- tibble(
+  parameter = "bend90_duration_tca",
+  statistic = unname(bend90_duration_residual_checks_tca$shapiro$statistic),
+  p_value = bend90_duration_residual_checks_tca$shapiro$p.value
+)
+
+shapiro_bend90_duration_tceoh_df <- tibble(
+  parameter = "bend90_duration_tceoh",
+  statistic = unname(bend90_duration_residual_checks_tceoh$shapiro$statistic),
+  p_value = bend90_duration_residual_checks_tceoh$shapiro$p.value
+)
+
+write_xlsx(
+  list(
+    anova_bend90_events_tca = anova_bend90_events_tca_df,
+    anova_bend90_events_tceoh = anova_bend90_events_tceoh_df,
+    anova_bend90_duration_tca = anova_bend90_duration_tca_df,
+    anova_bend90_duration_tceoh = anova_bend90_duration_tceoh_df,
+    shapiro_bend90_events_tca = shapiro_bend90_events_tca_df,
+    shapiro_bend90_events_tceoh = shapiro_bend90_events_tceoh_df,
+    shapiro_bend90_duration_tca = shapiro_bend90_duration_tca_df,
+    shapiro_bend90_duration_tceoh = shapiro_bend90_duration_tceoh_df,
+    cld_bend90_events_tca = cld_bend90_events_tca,
+    cld_bend90_events_tceoh = cld_bend90_events_tceoh,
+    cld_bend90_duration_tca = cld_bend90_duration_tca,
+    cld_bend90_duration_tceoh = cld_bend90_duration_tceoh
+  ),
+  "Day 5/bend90_stats.xlsx"
+)
+```
+
+
+#Normalizing Data and Analysis
+``` {r track metrics normalized}
+#Average 5 min timepoint, then divide individual 5 min and 30 min values by average
+track_metrics_tca_norm <- track_metrics_tca %>%
+  group_by(expt, strain, parameter) %>%
+  mutate(
+    baseline_5min = mean(value[timing == "5 min" & treatment == "Ctrl"], na.rm = TRUE),
+    ratio_value_norm = (value / baseline_5min) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    expt_num = gsub("Expt ", "", expt),
+    worm_id = paste(expt_num, strain, treatment, date, video_number, timing, paste0("rep", worm), sep = "_")
+  )
+
+track_metrics_tceoh_norm <- track_metrics_tceoh %>%
+  group_by(expt, strain, parameter) %>%
+  mutate(
+    baseline_5min = mean(value[timing == "5 min" & treatment == "Solv Ctrl"], na.rm = TRUE),
+    ratio_value_norm = (value / baseline_5min) * 100
+  ) %>%
+  ungroup() %>%
+  mutate(
+    expt_num = gsub("Expt ", "", expt),
+    worm_id = paste(expt_num, strain, treatment, date, video_number, timing, paste0("rep", worm), sep = "_")
+  )
+
+ylabel_map <- c(
+  "Absolute Peristaltic Track Length (um) [forward + reversals]" = "% Control of Track Length",
+  "Mean Worm Length (um)" = "% Control of Worm Length",
+  "Peristaltic Speed (um/s) [Absolute peristaltic track length/time]" = "% Control of Peristaltic Speed",
+  "Wavelength (um)" = "% Control of Wavelength",
+  "Turn Count" = "% Control of Turn Count",
+  "Number of Reversals" = "% Control of Number of Reversals"
+)
+```
+
+##Track Metrics and Stats - Normalized
+``` {r stats for normalized track metrics - tca}
+track_metrics_tca_norm <- track_metrics_tca_norm %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(worm_id)
+  )
+
+models_tca_norm <- track_metrics_tca_norm %>%
+  split(.$parameter) %>%
+  map(~ aov_ez(
+    id = "worm_id",
+    dv = "ratio_value_norm",
+    between = c("timing", "treatment", "strain"),
+    data = .x,
+    type = 3,
+    white.adjust = TRUE
+  ))
+
+residual_checks_tca_norm <- imap(models_tca_norm, ~ {
+  mod <- .x$lm
+  res <- residuals(mod)
+  list(parameter = .y, shapiro = shapiro.test(res), residuals = res)
+})
+
+qqnorm(residuals(models_tca_norm[[1]]$lm)); qqline(residuals(models_tca_norm[[1]]$lm))
+qqnorm(residuals(models_tca_norm[[2]]$lm)); qqline(residuals(models_tca_norm[[2]]$lm))
+qqnorm(residuals(models_tca_norm[[3]]$lm)); qqline(residuals(models_tca_norm[[3]]$lm))
+qqnorm(residuals(models_tca_norm[[4]]$lm)); qqline(residuals(models_tca_norm[[4]]$lm))
+qqnorm(residuals(models_tca_norm[[5]]$lm)); qqline(residuals(models_tca_norm[[5]]$lm))
+qqnorm(residuals(models_tca_norm[[6]]$lm)); qqline(residuals(models_tca_norm[[6]]$lm))
+```
+
+``` {r CLD for normalized track metrics - tca}
+cld_tca_norm <- models_tca_norm %>%
+  imap_dfr(~ {
+    emmeans(.x, ~ treatment * strain * timing) %>%
+      cld(adjust = "sidak", Letters = letters) %>%
+      as.data.frame()
+  }, .id = "parameter") %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting normalized track metrics - tca}
+track_summary_tca_norm <- track_metrics_tca_norm %>%
+  group_by(parameter, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(ratio_value_norm, na.rm = TRUE),
+    sd_value = sd(ratio_value_norm, na.rm = TRUE),
+    n = sum(!is.na(ratio_value_norm)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+cld_labels_tca_norm <- cld_tca_norm %>%
+  left_join(
+    track_summary_tca_norm %>%
+      dplyr::select(parameter, strain, treatment, timing, mean_value, se_value),
+    by = c("parameter", "strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+plots_tca_norm <- lapply(metrics, function(m) {
+  df <- track_summary_tca_norm %>% filter(parameter == m)
+  cld_df <- cld_labels_tca_norm %>% filter(parameter == m)
+  
+  y_lab <- if (m %in% names(ylabel_map)) ylabel_map[m] else "Percent Control of Value"
+  
+  ggplot(df, aes(x = treatment, y = mean_value, fill = timing)) +
+    geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+    geom_errorbar(
+      aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+      position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+    ) +
+    geom_text(
+      data = cld_df,
+      aes(x = treatment, y = label_y, label = .group, group = timing),
+      position = position_dodge(width = 0.8),
+      vjust = -0.5, size = 3.5, inherit.aes = FALSE
+    ) +
+    facet_wrap(~strain) +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+    scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+    labs(x = "Treatment", y = y_lab, fill = "Timing", title = m) +
+    theme_classic(base_size = 14) +
+    theme(
+      panel.spacing = unit(1, "lines"),
+      axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+      axis.text.y = element_text(color = "black"),
+      axis.title = element_text(color = "black"),
+      strip.text = element_text(size = 10, color = "black"),
+      axis.line = element_line(linewidth = 0.6, color = "black"),
+      axis.ticks = element_line(linewidth = 0.6, color = "black"),
+      legend.position = "right"
+    )
+})
+
+plots_tca_norm[[1]]
+plots_tca_norm[[2]]
+plots_tca_norm[[3]]
+plots_tca_norm[[4]]
+plots_tca_norm[[5]]
+plots_tca_norm[[6]]
+
+for (i in seq_along(plots_tca_norm)) {
+  ggsave(
+    filename = paste0("Day 5/track_tca_norm_", i, ".png"),
+    plot = plots_tca_norm[[i]],
+    width = 8, height = 6, units = "in", dpi = 300
+  )
+}
+```
+
+``` {r stats for normalized track metrics - tceoh}
+track_metrics_tceoh_norm <- track_metrics_tceoh_norm %>%
+  mutate(
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment),
+    strain = factor(strain),
+    worm_id = factor(worm_id)
+  )
+
+models_tceoh_norm <- track_metrics_tceoh_norm %>%
+  split(.$parameter) %>%
+  map(~ aov_ez(
+    id = "worm_id",
+    dv = "ratio_value_norm",
+    between = c("timing", "treatment", "strain"),
+    data = .x,
+    type = 3,
+    white.adjust = TRUE
+  ))
+
+residual_checks_tceoh_norm <- imap(models_tceoh_norm, ~ {
+  mod <- .x$lm
+  res <- residuals(mod)
+  list(parameter = .y, shapiro = shapiro.test(res), residuals = res)
+})
+
+qqnorm(residuals(models_tceoh_norm[[1]]$lm)); qqline(residuals(models_tceoh_norm[[1]]$lm))
+qqnorm(residuals(models_tceoh_norm[[2]]$lm)); qqline(residuals(models_tceoh_norm[[2]]$lm))
+qqnorm(residuals(models_tceoh_norm[[3]]$lm)); qqline(residuals(models_tceoh_norm[[3]]$lm))
+qqnorm(residuals(models_tceoh_norm[[4]]$lm)); qqline(residuals(models_tceoh_norm[[4]]$lm))
+qqnorm(residuals(models_tceoh_norm[[5]]$lm)); qqline(residuals(models_tceoh_norm[[5]]$lm))
+qqnorm(residuals(models_tceoh_norm[[6]]$lm)); qqline(residuals(models_tceoh_norm[[6]]$lm))
+```
+
+``` {r CLD for normalized track metrics - tceoh}
+cld_tceoh_norm <- models_tceoh_norm %>%
+  imap_dfr(~ {
+    emmeans(.x, ~ treatment * strain * timing) %>%
+      cld(adjust = "sidak", Letters = letters) %>%
+      as.data.frame()
+  }, .id = "parameter") %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting normalized track metrics - tceoh}
+track_summary_tceoh_norm <- track_metrics_tceoh_norm %>%
+  group_by(parameter, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(ratio_value_norm, na.rm = TRUE),
+    sd_value = sd(ratio_value_norm, na.rm = TRUE),
+    n = sum(!is.na(ratio_value_norm)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+cld_labels_tceoh_norm <- cld_tceoh_norm %>%
+  left_join(
+    track_summary_tceoh_norm %>%
+      dplyr::select(parameter, strain, treatment, timing, mean_value, se_value),
+    by = c("parameter", "strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+plots_tceoh_norm <- lapply(metrics, function(m) {
+  df <- track_summary_tceoh_norm %>% filter(parameter == m)
+  cld_df <- cld_labels_tceoh_norm %>% filter(parameter == m)
+  
+  y_lab <- if (m %in% names(ylabel_map)) ylabel_map[m] else "Normalized Value"
+  
+  ggplot(df, aes(x = treatment, y = mean_value, fill = timing)) +
+    geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+    geom_errorbar(
+      aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+      position = position_dodge(0.8), width = 0.2, linewidth = 0.5
+    ) +
+    geom_text(
+      data = cld_df,
+      aes(x = treatment, y = label_y, label = .group, group = timing),
+      position = position_dodge(width = 0.8),
+      vjust = -0.5, size = 3.5, inherit.aes = FALSE
+    ) +
+    facet_wrap(~strain) +
+    scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+    scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+    labs(x = "Treatment", y = y_lab, fill = "Timing", title = m) +
+    theme_classic(base_size = 14) +
+    theme(
+      panel.spacing = unit(1, "lines"),
+      axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+      axis.text.y = element_text(color = "black"),
+      axis.title = element_text(color = "black"),
+      strip.text = element_text(size = 10, color = "black"),
+      axis.line = element_line(linewidth = 0.6, color = "black"),
+      axis.ticks = element_line(linewidth = 0.6, color = "black"),
+      legend.position = "right"
+    )
+})
+
+plots_tceoh_norm[[1]]
+plots_tceoh_norm[[2]]
+plots_tceoh_norm[[3]]
+plots_tceoh_norm[[4]]
+plots_tceoh_norm[[5]]
+plots_tceoh_norm[[6]]
+
+for (i in seq_along(plots_tceoh_norm)) {
+  ggsave(
+    filename = paste0("Day 5/track_tceoh_norm_", i, ".png"),
+    plot = plots_tceoh_norm[[i]],
+    width = 8, height = 6, units = "in", dpi = 300
+  )
+}
+```
+
+``` {r export normalized stats}
+anova_tca_norm_df <- imap_dfr(models_tca_norm, ~
+  nice(.x) %>% as.data.frame() %>% mutate(parameter = .y, .before = 1)
+)
+
+anova_tceoh_norm_df <- imap_dfr(models_tceoh_norm, ~
+  nice(.x) %>% as.data.frame() %>% mutate(parameter = .y, .before = 1)
+)
+
+shapiro_tca_norm_df <- imap_dfr(residual_checks_tca_norm, ~
+  tibble(
+    parameter = .y,
+    statistic = unname(.x$shapiro$statistic),
+    p_value = .x$shapiro$p.value
+  )
+)
+
+shapiro_tceoh_norm_df <- imap_dfr(residual_checks_tceoh_norm, ~
+  tibble(
+    parameter = .y,
+    statistic = unname(.x$shapiro$statistic),
+    p_value = .x$shapiro$p.value
+  )
+)
+
+write_xlsx(
+  list(
+    anova_track_tca_norm = anova_tca_norm_df,
+    anova_track_tceoh_norm = anova_tceoh_norm_df,
+    shapiro_track_tca_norm = shapiro_tca_norm_df,
+    shapiro_track_tceoh_norm = shapiro_tceoh_norm_df,
+    cld_track_tca_norm = cld_tca_norm,
+    cld_track_tceoh_norm = cld_tceoh_norm
+  ),
+  "Day 5/track_metrics_norm_stats.xlsx"
+)
+```
+
+##Omega Bend Behavior - Proportions
+``` {r omega proportions - tca}
+omega_summary_tca <- omega_events_tca %>%
+  mutate(
+    any_omega = if_else(n_omega_events > 0, 1L, 0L),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+omega_prop_worms_tca <- omega_summary_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(any_omega),
+    sd_value = sd(any_omega),
+    n = n(),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+omega_time_tca <- omega_duration_tca %>%
+  mutate(
+    total_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else sum(.x)),
+    prop_time_omega = total_duration / 30,
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+omega_time_summary_tca <- omega_time_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(prop_time_omega, na.rm = TRUE),
+    sd_value = sd(prop_time_omega, na.rm = TRUE),
+    n = sum(!is.na(prop_time_omega)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r logistic regression for omega proportions - tca}
+omega_summary_tca <- omega_summary_tca %>%
+  mutate(any_omega = factor(any_omega))
+
+model_omega_tca_glm <- glm(
+  any_omega ~ strain * treatment * timing,
+  data = omega_summary_tca,
+  family = binomial
+)
+
+summary(model_omega_tca_glm)
+
+# Model for proportion of time in omega
+model_omega_time_tca_glm <- glm(
+  prop_time_omega ~ strain * treatment * timing,
+  data = omega_time_tca,
+  family = quasibinomial  # handles continuous proportions 0-1
+)
+
+summary(model_omega_time_tca_glm)
+```
+
+``` {r CLD for omega proportions - tca}
+cld_omega_prop_tca <- emmeans(model_omega_tca_glm, ~ treatment * strain * timing,
+                               type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_omega_time_tca <- emmeans(model_omega_time_tca_glm, ~ treatment * strain * timing,
+                               type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega proportions - tca}
+cld_labels_omega_prop_tca <- cld_omega_prop_tca %>%
+  left_join(
+    omega_prop_worms_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_omega_time_tca <- cld_omega_time_tca %>%
+  left_join(
+    omega_time_summary_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p1 <- ggplot(omega_prop_worms_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_omega_prop_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of worms with omega bends",
+       title = "Occurrence of Omega Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p2 <- ggplot(omega_time_summary_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_omega_time_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of time in omega",
+       title = "Time Spent in Omega Behavior", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p1
+p2
+
+ggsave("Day 5/omega_prop_worms_tca.png", p1, width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/omega_time_tca_prop.png", p2, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r omega proportions - tceoh}
+omega_summary_tceoh <- omega_events_tceoh %>%
+  mutate(
+    any_omega = if_else(n_omega_events > 0, 1L, 0L),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+omega_prop_worms_tceoh <- omega_summary_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(any_omega),
+    sd_value = sd(any_omega),
+    n = n(),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+omega_time_tceoh <- omega_duration_tceoh %>%
+  mutate(
+    total_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else sum(.x)),
+    prop_time_omega = total_duration / 30,
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+omega_time_summary_tceoh <- omega_time_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(prop_time_omega, na.rm = TRUE),
+    sd_value = sd(prop_time_omega, na.rm = TRUE),
+    n = sum(!is.na(prop_time_omega)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r logistic regression for omega proportions - tceoh}
+omega_summary_tceoh <- omega_summary_tceoh %>%
+  mutate(any_omega = factor(any_omega))
+
+model_omega_tceoh_glm <- glm(
+  any_omega ~ strain * treatment * timing,
+  data = omega_summary_tceoh,
+  family = binomial
+)
+
+summary(model_omega_tceoh_glm)
+
+model_omega_time_tceoh_glm <- glm(
+  prop_time_omega ~ strain * treatment * timing,
+  data = omega_time_tceoh,
+  family = quasibinomial
+)
+
+summary(model_omega_time_tceoh_glm)
+```
+
+``` {r CLD for omega proportions - tceoh}
+cld_omega_prop_tceoh <- emmeans(model_omega_tceoh_glm, ~ treatment * strain * timing,
+                                 type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_omega_time_tceoh <- emmeans(model_omega_time_tceoh_glm, ~ treatment * strain * timing,
+                                 type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting omega proportions - tceoh}
+cld_labels_omega_prop_tceoh <- cld_omega_prop_tceoh %>%
+  left_join(
+    omega_prop_worms_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_omega_time_tceoh <- cld_omega_time_tceoh %>%
+  left_join(
+    omega_time_summary_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p3 <- ggplot(omega_prop_worms_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_omega_prop_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of worms with omega bends",
+       title = "Occurrence of Omega Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p4 <- ggplot(omega_time_summary_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_omega_time_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of time in omega",
+       title = "Time Spent in Omega Behavior", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p3
+p4
+
+ggsave("Day 5/omega_prop_worms_tceoh.png", p3, width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/omega_time_tceoh_prop.png", p4, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r export omega proportion stats}
+write_xlsx(
+  list(
+    glm_omega_prop_tca = broom::tidy(model_omega_tca_glm),
+    glm_omega_time_tca = broom::tidy(model_omega_time_tca_glm),
+    cld_omega_prop_tca = cld_omega_prop_tca,
+    cld_omega_time_tca = cld_omega_time_tca,
+    glm_omega_prop_tceoh = broom::tidy(model_omega_tceoh_glm),
+    glm_omega_time_tceoh = broom::tidy(model_omega_time_tceoh_glm),
+    cld_omega_prop_tceoh = cld_omega_prop_tceoh,
+    cld_omega_time_tceoh = cld_omega_time_tceoh
+  ),
+  "Day 5/omega_logistic_stats.xlsx"
+)
+```
+
+##Bending Behavior - Proportions
+``` {r bend90 proportions - tca}
+bend90_summary_tca <- bend90_events_tca %>%
+  mutate(
+    any_bend90 = if_else(n_bend90_events > 0, 1L, 0L),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+bend90_prop_worms_tca <- bend90_summary_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(any_bend90),
+    sd_value = sd(any_bend90),
+    n = n(),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+bend90_time_tca <- bending_duration_tca %>%
+  mutate(
+    total_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else sum(.x)),
+    prop_time_bend90 = total_duration / 30,
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+bend90_time_summary_tca <- bend90_time_tca %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(prop_time_bend90, na.rm = TRUE),
+    sd_value = sd(prop_time_bend90, na.rm = TRUE),
+    n = sum(!is.na(prop_time_bend90)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r logistic regression for bend90 proportions - tca}
+bend90_summary_tca <- bend90_summary_tca %>%
+  mutate(any_bend90 = factor(any_bend90))
+
+model_bend90_tca_glm <- glm(
+  any_bend90 ~ strain * treatment * timing,
+  data = bend90_summary_tca,
+  family = binomial
+)
+
+summary(model_bend90_tca_glm)
+
+model_bend90_time_tca_glm <- glm(
+  prop_time_bend90 ~ strain * treatment * timing,
+  data = bend90_time_tca,
+  family = quasibinomial
+)
+
+summary(model_bend90_time_tca_glm)
+```
+
+``` {r CLD for bend90 proportions - tca}
+cld_bend90_prop_tca <- emmeans(model_bend90_tca_glm, ~ treatment * strain * timing,
+                                type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_bend90_time_tca <- emmeans(model_bend90_time_tca_glm, ~ treatment * strain * timing,
+                                type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 proportions - tca}
+cld_labels_bend90_prop_tca <- cld_bend90_prop_tca %>%
+  left_join(
+    bend90_prop_worms_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_bend90_time_tca <- cld_bend90_time_tca %>%
+  left_join(
+    bend90_time_summary_tca %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p1 <- ggplot(bend90_prop_worms_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_bend90_prop_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of worms with high-angled bends",
+       title = "Occurrence of High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p2 <- ggplot(bend90_time_summary_tca, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_bend90_time_tca,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of time in high-angled bends",
+       title = "Time Spent in High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p1
+p2
+
+ggsave("Day 5/bend90_prop_worms_tca.png", p1, width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/bend90_time_tca_prop.png", p2, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r bend90 proportions - tceoh}
+bend90_summary_tceoh <- bend90_events_tceoh %>%
+  mutate(
+    any_bend90 = if_else(n_bend90_events > 0, 1L, 0L),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+bend90_prop_worms_tceoh <- bend90_summary_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(any_bend90),
+    sd_value = sd(any_bend90),
+    n = n(),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+
+bend90_time_tceoh <- bending_duration_tceoh %>%
+  mutate(
+    total_duration = map_dbl(durations_sec, ~ if (length(.x) == 0) 0 else sum(.x)),
+    prop_time_bend90 = total_duration / 30,
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  )
+
+bend90_time_summary_tceoh <- bend90_time_tceoh %>%
+  group_by(day, strain, treatment, timing) %>%
+  summarise(
+    mean_value = mean(prop_time_bend90, na.rm = TRUE),
+    sd_value = sd(prop_time_bend90, na.rm = TRUE),
+    n = sum(!is.na(prop_time_bend90)),
+    se_value = sd_value / sqrt(n),
+    .groups = "drop"
+  )
+```
+
+``` {r logistic regression for bend90 proportions - tceoh}
+bend90_summary_tceoh <- bend90_summary_tceoh %>%
+  mutate(any_bend90 = factor(any_bend90))
+
+model_bend90_tceoh_glm <- glm(
+  any_bend90 ~ strain * treatment * timing,
+  data = bend90_summary_tceoh,
+  family = binomial
+)
+
+summary(model_bend90_tceoh_glm)
+
+model_bend90_time_tceoh_glm <- glm(
+  prop_time_bend90 ~ strain * treatment * timing,
+  data = bend90_time_tceoh,
+  family = quasibinomial
+)
+
+summary(model_bend90_time_tceoh_glm)
+```
+
+``` {r CLD for bend90 proportions - tceoh}
+cld_bend90_prop_tceoh <- emmeans(model_bend90_tceoh_glm, ~ treatment * strain * timing,
+                                  type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+
+cld_bend90_time_tceoh <- emmeans(model_bend90_time_tceoh_glm, ~ treatment * strain * timing,
+                                  type = "response") %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend90 proportions - tceoh}
+cld_labels_bend90_prop_tceoh <- cld_bend90_prop_tceoh %>%
+  left_join(
+    bend90_prop_worms_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+cld_labels_bend90_time_tceoh <- cld_bend90_time_tceoh %>%
+  left_join(
+    bend90_time_summary_tceoh %>%
+      dplyr::select(strain, treatment, timing, mean_value, se_value),
+    by = c("strain", "treatment", "timing")
+  ) %>%
+  mutate(label_y = mean_value + se_value)
+
+p3 <- ggplot(bend90_prop_worms_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_bend90_prop_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, 1), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of worms with high-angled bends",
+       title = "Occurrence of High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p4 <- ggplot(bend90_time_summary_tceoh, aes(x = treatment, y = mean_value, fill = timing)) +
+  geom_col(position = position_dodge(0.8), width = 0.7, color = "black", linewidth = 0.5) +
+  geom_errorbar(aes(ymin = mean_value - se_value, ymax = mean_value + se_value),
+                position = position_dodge(0.8), width = 0.2, linewidth = 0.5) +
+  geom_text(
+    data = cld_labels_bend90_time_tceoh,
+    aes(x = treatment, y = label_y, label = .group, group = timing),
+    position = position_dodge(width = 0.8),
+    vjust = -0.5, size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_wrap(~strain) +
+  scale_y_continuous(limits = c(0, NA), expand = expansion(mult = c(0, 0.15))) +
+  scale_fill_manual(values = c("5 min" = "#1f77b4", "30 min" = "#d62728")) +
+  labs(x = "Treatment", y = "Proportion of time in high-angled bends",
+       title = "Time Spent in High-Angled Bends", fill = "Timing") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+
+p3
+p4
+
+ggsave("Day 5/bend90_prop_worms_tceoh.png", p3, width = 8, height = 6, units = "in", dpi = 300)
+ggsave("Day 5/bend90_time_tceoh_prop.png", p4, width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r export bend90 proportion stats}
+write_xlsx(
+  list(
+    glm_bend90_prop_tca = broom::tidy(model_bend90_tca_glm),
+    glm_bend90_time_tca = broom::tidy(model_bend90_time_tca_glm),
+    cld_bend90_prop_tca = cld_bend90_prop_tca,
+    cld_bend90_time_tca = cld_bend90_time_tca,
+    glm_bend90_prop_tceoh = broom::tidy(model_bend90_tceoh_glm),
+    glm_bend90_time_tceoh = broom::tidy(model_bend90_time_tceoh_glm),
+    cld_bend90_prop_tceoh = cld_bend90_prop_tceoh,
+    cld_bend90_time_tceoh = cld_bend90_time_tceoh
+  ),
+  "Day 5/bend90_logistic_stats.xlsx"
+)
+```
+
+##Binning the Bending Events
+``` {r bend angle bins - tca}
+bend_bins_tca <- bending_tca %>%
+  mutate(
+    value = as.numeric(value),
+    abs_bend = abs(value),
+    bend_bin = case_when(
+      abs_bend < 30  ~ "0-30",
+      abs_bend < 60  ~ "30-60",
+      abs_bend < 90  ~ "60-90",
+      abs_bend < 120 ~ "90-120",
+      abs_bend < 150 ~ "120-150",
+      abs_bend < 180 ~ "150-180",
+      TRUE ~ NA_character_
+    ),
+    bend_bin = factor(bend_bin,
+      levels = c("0-30", "30-60", "60-90", "90-120", "120-150", "150-180")
+    )
+  ) %>%
+  filter(!is.na(bend_bin))
+
+bend_props_tca <- bend_bins_tca %>%
+  group_by(strain, treatment, timing, bend_bin) %>%
+  summarise(n_frames = n(), .groups = "drop") %>%
+  complete(strain, treatment, timing, bend_bin, fill = list(n_frames = 0)) %>%
+  group_by(strain, treatment, timing) %>%
+  mutate(
+    prop_frames = n_frames / sum(n_frames),
+    prop_percent = prop_frames * 100
+  ) %>%
+  ungroup()
+```
+
+``` {r stats for bend angle bins - tca}
+bend_bins_tca_stats <- bending_tca %>%
+  mutate(
+    value = as.numeric(value),
+    abs_bend = abs(value),
+    bend_bin = case_when(
+      abs_bend < 60  ~ "low",
+      abs_bend < 90  ~ "mid",
+      abs_bend >= 90 ~ "high",
+      TRUE ~ NA_character_
+    ),
+    bend_bin = factor(bend_bin, levels = c("low", "mid", "high")),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment, levels = c("Ctrl", "TCA")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  filter(!is.na(bend_bin))
+
+bend_props_worm_tca <- bend_bins_tca_stats %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number, bend_bin) %>%
+  summarise(n_frames = n(), .groups = "drop") %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  mutate(prop = n_frames / sum(n_frames)) %>%
+  ungroup() %>%
+  complete(
+    expt, day, strain, treatment, timing, worm, video_number, bend_bin,
+    fill = list(prop = 0)
+  )
+
+bend_props_wide_tca <- bend_props_worm_tca %>%
+  dplyr::select(expt, day, strain, treatment, timing, worm, video_number, bend_bin, prop) %>%
+  pivot_wider(names_from = bend_bin, values_from = prop, values_fill = 0) %>%
+  mutate(worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_")))
+
+model_high_tca <- aov_ez(
+  id = "worm_id",
+  dv = "high",
+  between = c("strain", "treatment", "timing"),
+  data = bend_props_wide_tca,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(model_high_tca)
+```
+
+``` {r CLD for bend angle bins - tca}
+cld_high_tca <- emmeans(model_high_tca, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend angle bins - tca}
+p1 <- ggplot(bend_props_tca, aes(x = timing, y = prop_frames, fill = bend_bin)) +
+  geom_col(position = "fill", width = 0.7, color = "black", linewidth = 0.2) +
+  geom_text(
+    data = cld_high_tca,
+    aes(x = timing, y = 1.08, label = .group),
+    size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_grid(strain ~ treatment) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_fill_viridis_d(drop = FALSE) +
+  labs(
+    x = "Timing",
+    y = "Percent of Frames",
+    fill = "Angle Bin",
+    title = "Distribution of Bending Angles"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+p1
+ggsave("Day 5/bend_angle_distribution_tca.png", p1,
+       width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r bend angle bins - tceoh}
+bend_bins_tceoh <- bending_tceoh %>%
+  mutate(
+    value = as.numeric(value),
+    abs_bend = abs(value),
+    bend_bin = case_when(
+      abs_bend < 30  ~ "0-30",
+      abs_bend < 60  ~ "30-60",
+      abs_bend < 90  ~ "60-90",
+      abs_bend < 120 ~ "90-120",
+      abs_bend < 150 ~ "120-150",
+      abs_bend < 180 ~ "150-180",
+      TRUE ~ NA_character_
+    ),
+    bend_bin = factor(bend_bin,
+      levels = c("0-30", "30-60", "60-90", "90-120", "120-150", "150-180")
+    )
+  ) %>%
+  filter(!is.na(bend_bin))
+
+bend_props_tceoh <- bend_bins_tceoh %>%
+  group_by(strain, treatment, timing, bend_bin) %>%
+  summarise(n_frames = n(), .groups = "drop") %>%
+  complete(strain, treatment, timing, bend_bin, fill = list(n_frames = 0)) %>%
+  group_by(strain, treatment, timing) %>%
+  mutate(
+    prop_frames = n_frames / sum(n_frames),
+    prop_percent = prop_frames * 100
+  ) %>%
+  ungroup()
+```
+
+``` {r stats for bend angle bins - tceoh}
+bend_bins_tceoh_stats <- bending_tceoh %>%
+  mutate(
+    value = as.numeric(value),
+    abs_bend = abs(value),
+    bend_bin = case_when(
+      abs_bend < 60  ~ "low",
+      abs_bend < 90  ~ "mid",
+      abs_bend >= 90 ~ "high",
+      TRUE ~ NA_character_
+    ),
+    bend_bin = factor(bend_bin, levels = c("low", "mid", "high")),
+    timing = factor(timing, levels = c("5 min", "30 min")),
+    treatment = factor(treatment, levels = c("Solv Ctrl", "TCEOH")),
+    strain = factor(strain, levels = c("N2", "BZ555", "UA44"))
+  ) %>%
+  filter(!is.na(bend_bin))
+
+bend_props_worm_tceoh <- bend_bins_tceoh_stats %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number, bend_bin) %>%
+  summarise(n_frames = n(), .groups = "drop") %>%
+  group_by(expt, day, strain, treatment, timing, worm, video_number) %>%
+  mutate(prop = n_frames / sum(n_frames)) %>%
+  ungroup() %>%
+  complete(
+    expt, day, strain, treatment, timing, worm, video_number, bend_bin,
+    fill = list(prop = 0)
+  )
+
+bend_props_wide_tceoh <- bend_props_worm_tceoh %>%
+  dplyr::select(expt, day, strain, treatment, timing, worm, video_number, bend_bin, prop) %>%
+  pivot_wider(names_from = bend_bin, values_from = prop, values_fill = 0) %>%
+  mutate(worm_id = factor(paste(expt, strain, treatment, day, timing, worm, video_number, sep = "_")))
+
+model_high_tceoh <- aov_ez(
+  id = "worm_id",
+  dv = "high",
+  between = c("strain", "treatment", "timing"),
+  data = bend_props_wide_tceoh,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(model_high_tceoh)
+```
+
+``` {r CLD for bend angle bins - tceoh}
+cld_high_tceoh <- emmeans(model_high_tceoh, ~ treatment * strain * timing) %>%
+  cld(adjust = "sidak", Letters = letters) %>%
+  as.data.frame() %>%
+  mutate(.group = trimws(.group))
+```
+
+``` {r plotting bend angle bins - tceoh}
+p2 <- ggplot(bend_props_tceoh, aes(x = timing, y = prop_frames, fill = bend_bin)) +
+  geom_col(position = "fill", width = 0.7, color = "black", linewidth = 0.2) +
+  geom_text(
+    data = cld_high_tceoh,
+    aes(x = timing, y = 1.08, label = .group),
+    size = 3.5, inherit.aes = FALSE
+  ) +
+  facet_grid(strain ~ treatment) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  scale_fill_viridis_d(drop = FALSE) +
+  labs(
+    x = "Timing",
+    y = "Percent of Frames",
+    fill = "Angle Bin",
+    title = "Distribution of Bending Angles"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.spacing = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title = element_text(color = "black"),
+    strip.text = element_text(size = 10, color = "black"),
+    axis.line = element_line(linewidth = 0.6, color = "black"),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    legend.position = "right"
+  )
+p2
+ggsave("Day 5/bend_angle_distribution_tceoh.png", p2,
+       width = 8, height = 6, units = "in", dpi = 300)
+```
+
+``` {r export bend angle bin stats}
+anova_high_tca_df  <- as.data.frame(nice(model_high_tca))
+anova_high_tceoh_df <- as.data.frame(nice(model_high_tceoh))
+
+write_xlsx(
+  list(
+    anova_high_tca   = anova_high_tca_df,
+    cld_high_tca     = cld_high_tca,
+    anova_high_tceoh = anova_high_tceoh_df,
+    cld_high_tceoh   = cld_high_tceoh
+  ),
+  "Day 5/bend_bin_stats.xlsx"
+)
+```
+
+``` {r end}
+beep()
+```
+
+
+
