@@ -1,0 +1,403 @@
+---
+title: "Length Analysis - M9 pH Test and TCAA Test"
+author: "Jocelyn Dicent"
+date: "2026-03-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(tidyverse)
+library(janitor)
+library(readr)
+library(ggplot2)
+library(afex)
+library(car)
+library(DescTools)
+library(rstatix)
+```
+
+#Reading in the Data
+``` {r reading in all files}
+all_files <- list.files(
+  "Image Data/",
+  pattern = "Results_.*\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+all_data <- tibble(file = all_files) %>%
+  mutate(
+    filename = basename(file),
+    expt_folder = basename(dirname(file)),
+    treatment = str_extract(expt_folder, "M9|TCAA"),
+    experiment = str_extract(expt_folder, "(?<=Expt )\\d+"),
+    image_number = str_extract(filename, "\\d+") %>% as.numeric(),
+    data = map(file, read_csv)
+  ) %>%
+  unnest(data)
+```
+
+``` {r M9 Data}
+all_m9_data <- all_data %>%
+  filter(treatment == "M9") %>%
+  mutate(ph = case_when(image_number %in% c("1905", "1985", "2037") ~ 7.1,
+                        image_number %in% c("1906", "1986", "2038") ~ 7,
+                        image_number %in% c("1907", "1987", "2039") ~ 6.5,
+                        image_number %in% c("1910", "1988", "2040") ~ 6,
+                        image_number %in% c("1909", "1989", "2041") ~ 5.5,
+                        image_number %in% c("1908", "1990", "2044") ~ 5.35
+                        )) %>%
+  mutate(worm_number = `...1`) %>%
+  mutate(ph = factor(ph)) %>%
+  clean_names() %>%
+  dplyr::select(treatment, ph, experiment, worm_number, length)
+```
+
+``` {r TCAA Expt}
+all_tcaa_data <- all_data %>%
+  filter(treatment == "TCAA") %>%
+  mutate(dose = case_when(image_number %in% c("1924", "2045", "2005") ~ "86 mM",
+                        image_number %in% c("1925", "2046", "2006") ~ "50 mM",
+                        image_number %in% c("1926", "2047", "2001") ~ "30 mM",
+                        image_number %in% c("1929", "2048", "2002") ~ "10 mM",
+                        image_number %in% c("1928", "2049", "2009") ~ "5 mM",
+                        image_number %in% c("1927", "2050", "2010") ~ "3 mM",
+                        image_number %in% c("1936", "2051", "2012") ~ "1 mM",
+                        image_number %in% c("1937", "2052", "2013") ~ "500 uM",
+                        image_number %in% c("1938", "2053", "2014") ~ "300 uM",
+                        image_number %in% c("1941", "2054", "2015") ~ "100 uM",
+                        image_number %in% c("1940", "2055", "2016") ~ "50 uM",
+                        image_number %in% c("1939", "2056", "2017") ~ "M9"
+                        )) %>%
+  mutate(worm_number = `...1`) %>%
+  clean_names() %>%
+  dplyr::select(treatment, dose, experiment, worm_number, length) %>%
+  mutate(dose = factor(dose,
+    levels = c("M9", "50 uM", "100 uM", "300 uM", "500 uM", "1 mM", "3 mM", "5 mM", "10 mM", "30 mM", "50 mM", "86 mM"),
+    labels = c("M9", "50 µM", "100 µM", "300 µM", "500 µM", "1 mM", "3 mM", "5 mM", "10 mM", "30 mM", "50 mM", "86 mM")
+  ))
+
+
+```
+
+#Initial Visualization
+``` {r initial viz - M9 expt}
+ggplot(all_m9_data, aes(x = factor(ph), y = length)) +
+  stat_summary(fun = mean, geom = "col", fill = "skyblue", color = "black", width = 0.7) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, color = "black") +
+  xlab("pH") +
+  ylab("Mean Length") +
+  theme_bw(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),   # remove major gridlines
+    panel.grid.minor = element_blank(),   # remove minor gridlines
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1)
+  )
+```
+
+``` {r intial viz - TCAA expt}
+ggplot(all_tcaa_data, aes(x = factor(dose), y = length)) +
+  stat_summary(fun = mean, geom = "col", fill = "skyblue", color = "black", width = 0.7) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2, color = "black") +
+  xlab("Dose") +
+  ylab("Mean Length") +
+  theme_bw(base_size = 14) +
+  theme(
+    panel.grid.major = element_blank(),   # remove major gridlines
+    panel.grid.minor = element_blank(),   # remove minor gridlines
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1)
+  )
+```
+
+#ANOVA
+``` {r running the Anova - M9}
+
+model <- aov(length ~ ph, data = all_m9_data)
+summary(model)
+
+TukeyHSD(model)
+
+#The raw data residuals are slightly non-normal so I may just correct using the M9 dose
+res <- residuals(model)
+qqnorm(res)
+qqline(res)
+```
+
+``` {r running the Anova - TCAA}
+model_tcaa <- aov(length ~ dose, data = all_tcaa_data)
+summary(model_tcaa)
+
+TukeyHSD(model_tcaa)
+
+#The raw data residuals are non-normal so I will normalize for sure.
+res <- residuals(model_tcaa)
+qqnorm(res)
+qqline(res)
+```
+
+#Normalization of the Data
+``` {r normalizing to the normal M9 dose - M9}
+all_m9_data_outlier_filtered <- all_m9_data %>%
+  group_by(ph, experiment) %>%
+  mutate(
+    mean_length = mean(length),
+    sd_length   = sd(length),
+    is_outlier  = abs(length - mean_length) > 2 * sd_length   # ±2 SD
+  ) %>%
+  filter(!is_outlier) %>%
+  dplyr::select(-mean_length, -sd_length, -is_outlier) %>%
+  ungroup()
+
+n_total_m9 <- nrow(all_m9_data)
+n_removed_m9 <- n_total_m9 - nrow(all_m9_data_outlier_filtered)
+
+all_m9_data_norm <- all_m9_data_outlier_filtered %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(length[ph == 7.1]),
+         percent_control = length / control_mean * 100) %>%
+  ungroup() %>%
+  dplyr::select(-control_mean)
+```
+
+``` {r normalizing to the normal M9 dose - TCAA}
+all_tcaa_data_outlier_filtered <- all_tcaa_data %>%
+  group_by(dose, experiment) %>%
+  mutate(
+    mean_length = mean(length),
+    sd_length   = sd(length),
+    is_outlier  = abs(length - mean_length) > 2 * sd_length   # ±2 SD
+  ) %>%
+  filter(!is_outlier) %>%
+  dplyr::select(-mean_length, -sd_length, -is_outlier) %>%
+  ungroup()
+
+n_total_tcaa <- nrow(all_tcaa_data)
+n_removed_tcaa <- n_total_tcaa - nrow(all_tcaa_data_outlier_filtered)
+
+all_tcaa_data_norm <- all_tcaa_data_outlier_filtered %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(length[dose == "M9"]),
+         percent_control = length / control_mean * 100) %>%
+  ungroup() %>%
+  dplyr::select(-control_mean)
+```
+
+#ANOVA Using Normalized Data
+``` {r running the ANOVA - M9}
+model_2 <- aov(percent_control ~ ph, data = all_m9_data_norm)
+summary(model_2)
+
+res <- residuals(model_2)
+qqnorm(res)
+qqline(res)
+
+all_m9_data_norm %>%
+  group_by(ph) %>%
+  summarise(
+    n = n(),
+    mean_length = mean(percent_control),
+    sd_length = sd(percent_control),
+    var_length = var(percent_control)
+  )
+#Variances are mostly fine but I will use Welch's anyway
+
+leveneTest(percent_control ~ factor(ph), data = all_m9_data_norm)
+
+welch_model <- oneway.test(percent_control ~ ph,
+                           data = all_m9_data_norm,
+                           var.equal = FALSE)  # FALSE = Welch
+welch_model
+
+all_m9_data_norm$ph <- relevel(factor(all_m9_data_norm$ph), ref = "7.1")
+
+#Games-Howell
+games_howell_ph <- all_m9_data_norm %>%
+  games_howell_test(percent_control ~ ph) %>%
+  filter(group1 == "7.1" | group2 == "7.1") %>%
+  mutate(
+    estimate = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.adj = case_when(
+      p.adj < 0.001 ~ "< 0.001",
+      TRUE ~ as.character(round(p.adj, 4))
+    )
+  ) %>%
+  select(group1, group2, estimate, conf.low, conf.high, p.adj)
+
+games_howell_ph
+```
+
+``` {r running the ANOVA - TCAA}
+model_tcaa_2 <- aov(percent_control ~ dose, data = all_tcaa_data_norm)
+summary(model_tcaa_2)
+
+res <- residuals(model_tcaa_2)
+qqnorm(res)
+qqline(res)
+
+all_tcaa_data_norm %>%
+  group_by(dose) %>%
+  summarise(
+    n = n(),
+    mean_length = mean(percent_control),
+    sd_length = sd(percent_control),
+    var_length = var(percent_control)
+  )
+#Variances are definitely not homogenous, qqplot is a bit better. Definitely will use the robust ANOVA.
+
+leveneTest(percent_control ~ factor(dose), data = all_tcaa_data_norm)
+
+welch_model_tcaa <- oneway.test(percent_control ~ dose,
+                           data = all_tcaa_data_norm,
+                           var.equal = FALSE)  # FALSE = Welch
+welch_model_tcaa
+
+
+# Games-Howell
+games_howell_tcaa <- all_tcaa_data_norm %>%
+  games_howell_test(percent_control ~ dose) %>%
+  filter(group1 == "M9" | group2 == "M9") %>%
+  mutate(
+    estimate = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.adj = case_when(
+      p.adj < 0.001 ~ "< 0.001",
+      TRUE ~ as.character(round(p.adj, 4))
+    )
+  ) %>%
+  select(group1, group2, estimate, conf.low, conf.high, p.adj)
+
+games_howell_tcaa
+```
+
+#Visualizing the Normalized Data
+``` {r normalized viz - M9 Expt}
+cld_df <- data.frame(
+  ph = factor(c("7.1", "5.35", "5.5", "6", "6.5", "7"),
+              levels = levels(all_m9_data_norm$ph)),
+  letter = c("a", "a", "a", "a", "b", "a")
+)
+
+m9_summary <- all_m9_data_norm %>%
+  group_by(ph) %>%
+  summarise(
+    mean = mean(percent_control),
+    se = sd(percent_control) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  left_join(cld_df, by = "ph") %>%
+  mutate(label_y = mean + se + 5)  # adjust the + 3 for more/less padding
+
+
+ggplot(all_m9_data_norm, aes(x = factor(ph), y = percent_control)) +
+  stat_summary(fun = mean, geom = "col", fill = "steelblue", color = "black", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, color = "black", linewidth = 0.7) +
+  geom_text(data = m9_summary %>%
+            mutate(stars = case_when(
+              ph == "6.5" ~ "***",
+              TRUE ~ ""
+            )),
+          aes(x = ph, y = label_y, label = stars),
+          size = 4, inherit.aes = FALSE) +
+  labs(
+    title = "Percent Control of C. elegans Body Size by pH",
+    x = "pH",
+    y = "Percent Control of Length"
+  ) +
+scale_x_discrete(
+  expand = expansion(add = 0.8),
+  labels = c("7.1" = "7.1 (M9)", "5.35" = "5.35", "5.5" = "5.5", "6" = "6", "6.5" = "6.5", "7" = "7")
+) +
+  scale_y_continuous(
+    limits = c(0, 125),
+    breaks = seq(0, 125, by = 25),
+    expand = expansion(mult = c(0, 0))
+) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave("celegans_body_size_pH.jpeg", dpi = 300, width = 6, height = 5, units = "in")
+```
+
+``` {r normalized viz - TCAA Expt}
+cld_df <- data.frame(
+  dose = factor(c("M9", "50 µM", "100 µM", "300 µM", "500 µM", "1 mM", "3 mM", "5 mM", "10 mM", "30 mM", "50 mM", "86 mM"),
+                levels = levels(all_tcaa_data_norm$dose)),
+  letter = c("ab", "ab", "ab", "b", "b", "ab", "a", "c", "d", "d", "d", "d")  
+)
+
+tcaa_summary <- all_tcaa_data_norm %>%
+  group_by(dose) %>%
+  summarise(
+    mean = mean(percent_control),
+    se = sd(percent_control) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  left_join(cld_df, by = "dose") %>%
+  mutate(label_y = mean + se + 5)  # adjust the + 3 for more/less padding
+
+
+ggplot(all_tcaa_data_norm, aes(x = factor(dose), y = percent_control)) +
+  stat_summary(fun = mean, geom = "col", fill = "steelblue", color = "black", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, color = "black", linewidth = 0.7) +
+  geom_text(data = tcaa_summary %>% 
+            mutate(stars = case_when(
+              dose == "300 µM" ~ "*",
+              dose == "500 µM" ~ "***",
+              dose == "3 mM"   ~ "**",
+              dose == "5 mM"   ~ "***",
+              dose == "10 mM"  ~ "***",
+              dose == "30 mM"  ~ "***",
+              dose == "50 mM"  ~ "***",
+              dose == "86 mM" ~ "***",
+              TRUE ~ ""  # no stars for non-significant
+            )),
+          aes(x = dose, y = label_y, label = stars),
+          size = 4, inherit.aes = FALSE) +
+  labs(
+    title = "Percent Control of C. elegans Body Size by TCA Dose",
+    x = "TCA Dose",
+    y = "Percent Control of Length"
+  ) +
+  scale_x_discrete() +
+  scale_y_continuous(
+  limits = c(0, 125),
+  breaks = seq(0, 125, by = 25),
+  expand = expansion(mult = c(0, 0))
+) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    panel.border = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.line = element_line(color = "black", linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave("celegans_body_size_tcaa.jpeg", dpi = 300, width = 6, height = 5, units = "in")
+```
+
+
+
+
