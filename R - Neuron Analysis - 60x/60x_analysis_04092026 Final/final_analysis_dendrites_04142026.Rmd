@@ -1,0 +1,1445 @@
+---
+title: "60x Analysis for Dendrites"
+author: "Jocelyn Dicent"
+date: "2026-04-09"
+output: html_document
+---
+
+``` {r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(scales)
+library(ordinal)
+library(emmeans)
+library(writexl)
+library(multcompView)
+```
+
+#Reading in QC and Raw Data
+``` {r import, clean, and check the QC}
+# Function to read and clean one QC file
+read_qc_file <- function(path) {
+  read_csv(path, skip = 1, col_names = TRUE, show_col_types = FALSE) %>%
+    rename(
+      image_group = 1,
+      file_name   = 2,
+      dup_1       = 3,
+      dup_2       = 4,
+      orig_1      = 5,
+      orig_2      = 6
+    ) %>%
+    mutate(
+      across(dup_1:orig_2, as.numeric)
+    )
+}
+
+# Function to compare original vs duplicate values within a row
+check_match <- function(orig, dup) {
+  orig_sorted <- sort(as.character(orig), na.last = TRUE)
+  dup_sorted  <- sort(as.character(dup),  na.last = TRUE)
+  identical(orig_sorted, dup_sorted)
+}
+
+# Function to score one QC dataset
+score_qc_dataset <- function(df) {
+  df %>%
+    rowwise() %>%
+    mutate(
+      match = check_match(
+        c(orig_1, orig_2),
+        c(dup_1, dup_2)
+      )
+    ) %>%
+    ungroup()
+}
+
+# File paths
+qc_files <- list(
+  bz555_1 = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day1_final_qc.csv",
+  bz555_3 = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day3_final_qc.csv",
+  bz555_5 = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day5_final_qc.csv",
+  ua44_1  = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day1_final_qc.csv",
+  ua44_3  = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day3_final_qc.csv",
+  ua44_5  = "/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day5_final_qc.csv"
+)
+
+# Read all QC files
+qc_data <- map(qc_files, read_qc_file)
+
+# Score all QC files
+qc_results <- map(qc_data, score_qc_dataset)
+
+# Summarize all QC files
+qc_summary <- map_dfr(
+  qc_results,
+  ~ summarise(
+    .x,
+    n_matching = sum(match),
+    total = n(),
+    percent = mean(match) * 100
+  ),
+  .id = "dataset"
+)
+
+# View summary
+qc_summary
+
+#Averages to about 70.53 correct for the QC matching
+```
+
+``` {r importing the raw data and getting treatments}
+data_bz555_1 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day1_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_26_2026" ~ "Expt 1",
+      date == "2_2_26" ~ "Expt 2",
+      date == "2_3_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 1) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+
+data_bz555_3 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day3_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_28_2026" ~ "Expt 1",
+      date == "2_4_26" ~ "Expt 2",
+      date == "2_5_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 3) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+
+data_bz555_5 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/BZ555/bz555_day5_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_30_26" ~ "Expt 1",
+      date == "2_6_26" ~ "Expt 2",
+      date == "2_7_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 5) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+
+data_ua44_1 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day1_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_26_2026" ~ "Expt 1",
+      date == "2_2_26" ~ "Expt 2",
+      date == "2_3_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 1) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+
+data_ua44_3 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day3_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_28_2026" ~ "Expt 1",
+      date == "2_4_26" ~ "Expt 2",
+      date == "2_5_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 3) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+
+data_ua44_5 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results Folder/UA44/ua44_day5_final_raw.csv", skip = 1, col_names = TRUE) %>%
+  rename(
+    group_name = 1,
+    den_1  = 2,
+    den_2 = 3,
+    file_name = 4
+  ) %>%
+  mutate(
+    across(den_1:den_2, ~ as.numeric(.))
+  ) %>%
+  mutate(
+    file_name_only = basename(str_replace_all(file_name, "\\\\", "/")),
+
+    strain = word(file_name_only, 1, sep = fixed("_")),
+    treatment = word(file_name_only, 2, sep = fixed("_")),
+
+    date = paste(
+      word(file_name_only, 3, sep = fixed("_")),
+      word(file_name_only, 4, sep = fixed("_")),
+      word(file_name_only, 5, sep = fixed("_")),
+      sep = "_"
+    ),
+
+    id = word(file_name_only, -2, sep = fixed("_")),
+
+    treatment = case_when(
+      treatment == "solv"  ~ "Solv Ctrl",
+      treatment == "ctrl"  ~ "Ctrl",
+      treatment == "tca"   ~ "TCA",
+      treatment == "tceoh" ~ "TCEOH",
+      TRUE ~ treatment
+    )
+  ) %>%
+  mutate(
+    expt = case_when(
+      date == "1_30_26" ~ "Expt 1",
+      date == "2_6_26" ~ "Expt 2",
+      date == "2_7_26" ~ "Expt 3",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(day = 5) %>%
+  select(expt, id, strain, day, treatment, den_1, den_2)
+```
+
+#Cleaning the Raw Data and Data Exploration
+``` {r combined data}
+all_data <- bind_rows(data_bz555_1, data_bz555_3, data_bz555_5,
+                      data_ua44_1, data_ua44_3, data_ua44_5)
+
+#checking that all the ids are unique
+id_check <- all_data %>%
+  count(id, strain, day, treatment, expt) %>% 
+  count(id) %>%                                  
+  filter(n > 1) %>%
+  arrange(desc(n))
+```
+
+``` {r reshape data and split by treatment}
+all_data_long <- all_data %>%
+  pivot_longer(
+    cols = c(den_1, den_2),
+    names_to = "dendrite",
+    values_to = "score"
+  ) %>%
+  mutate(
+    score = factor(score, levels = 0:4, ordered = TRUE),
+    day = factor(day, levels = c(1, 3, 5))
+  )
+
+tca_data <- all_data_long %>%
+  filter(treatment %in% c("Ctrl", "TCA")) %>%
+  mutate(
+    treatment = factor(treatment, levels = c("Ctrl", "TCA"))
+  )
+
+tceoh_data <- all_data_long %>%
+  filter(treatment %in% c("Solv Ctrl", "TCEOH")) %>%
+  mutate(
+    treatment = factor(treatment, levels = c("Solv Ctrl", "TCEOH"))
+  )
+```
+
+``` {r summary}
+summary <- all_data_long %>%
+  group_by(day, treatment, strain) %>%
+  summarise(count = n())
+```
+
+#Chi Square Test
+``` {r Chi Square test for treatment}
+#Using Chi Square since this is the typical test used in the field for dendrite analysis. Running only the pairwise tests that make the most sense biologically.
+
+#Helper function to run one pairwise chi-square test
+run_one_chisq <- function(df, group1_label, group2_label, comparison_type,
+                          strain_val = NA, treatment_val = NA, day_val = NA,
+                          family_val = NA) {
+  
+  df <- df %>%
+    filter(!is.na(score)) %>%
+    mutate(score = droplevels(factor(score)))
+  
+  tab <- table(df$group, df$score)
+  
+  if (nrow(tab) < 2 || ncol(tab) < 2) {
+    return(tibble(
+      family = family_val,
+      comparison_type = comparison_type,
+      strain = strain_val,
+      treatment = treatment_val,
+      day = day_val,
+      group1 = group1_label,
+      group2 = group2_label,
+      chisq = NA_real_,
+      df = NA_real_,
+      p_value = NA_real_
+    ))
+  }
+  
+  test <- suppressWarnings(chisq.test(tab))
+  
+  tibble(
+    family = family_val,
+    comparison_type = comparison_type,
+    strain = strain_val,
+    treatment = treatment_val,
+    day = day_val,
+    group1 = group1_label,
+    group2 = group2_label,
+    chisq = unname(test$statistic),
+    df = unname(test$parameter),
+    p_value = test$p.value
+  )
+}
+
+#Same treatment across days but within strain
+run_day_pairwise_family <- function(data, treatment_levels, family_label) {
+  day_pairs <- list(c("1", "3"), c("1", "5"), c("3", "5"))
+  
+  data %>%
+    filter(treatment %in% treatment_levels) %>%
+    filter(!is.na(score)) %>%
+    mutate(
+      strain = as.character(strain),
+      treatment = as.character(treatment),
+      day = as.character(day)
+    ) %>%
+    group_by(strain, treatment) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      strain_val <- unique(df_sub$strain)
+      treatment_val <- unique(df_sub$treatment)
+      
+      map_dfr(day_pairs, function(pair) {
+        subdf <- df_sub %>%
+          filter(day %in% pair) %>%
+          mutate(group = paste0("Day ", day))
+        
+        run_one_chisq(
+          df = subdf,
+          group1_label = paste0("Day ", pair[1]),
+          group2_label = paste0("Day ", pair[2]),
+          comparison_type = "Day within Strain x Treatment",
+          strain_val = strain_val,
+          treatment_val = treatment_val,
+          day_val = NA,
+          family_val = family_label
+        )
+      })
+    })
+}
+
+#Control vs. treatment within day and strain
+run_treatment_pairwise_family <- function(data, treatment_levels, family_label) {
+  data %>%
+    filter(treatment %in% treatment_levels) %>%
+    filter(!is.na(score)) %>%
+    mutate(
+      strain = as.character(strain),
+      day = as.character(day),
+      treatment = as.character(treatment)
+    ) %>%
+    group_by(strain, day) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      strain_val <- unique(df_sub$strain)
+      day_val <- unique(df_sub$day)
+      
+      subdf <- df_sub %>%
+        mutate(group = treatment)
+      
+      run_one_chisq(
+        df = subdf,
+        group1_label = treatment_levels[1],
+        group2_label = treatment_levels[2],
+        comparison_type = "Treatment within Strain x Day",
+        strain_val = strain_val,
+        treatment_val = NA,
+        day_val = day_val,
+        family_val = family_label
+      )
+    })
+}
+
+#Across strains within the same day and treatment
+run_strain_pairwise_family <- function(data, treatment_levels, family_label) {
+  data %>%
+    filter(treatment %in% treatment_levels) %>%
+    filter(strain %in% c("bz555", "ua44")) %>%
+    filter(!is.na(score)) %>%
+    mutate(
+      strain = as.character(strain),
+      day = as.character(day),
+      treatment = as.character(treatment)
+    ) %>%
+    group_by(day, treatment) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      day_val <- unique(df_sub$day)
+      treatment_val <- unique(df_sub$treatment)
+      
+      subdf <- df_sub %>%
+        mutate(group = strain)
+      
+      run_one_chisq(
+        df = subdf,
+        group1_label = "bz555",
+        group2_label = "ua44",
+        comparison_type = "Strain within Day x Treatment",
+        strain_val = NA,
+        treatment_val = treatment_val,
+        day_val = day_val,
+        family_val = family_label
+      )
+    })
+}
+
+# Helper function to get letters from the pairwise reuslts
+make_letters_table <- function(results_df) {
+  
+  # Day letters: within each strain x treatment
+  day_letters <- results_df %>%
+    filter(comparison_type == "Day within Strain x Treatment") %>%
+    group_by(strain, treatment) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      groups <- sort(unique(c(df_sub$group1, df_sub$group2)))
+      pvec <- df_sub %>%
+        filter(!is.na(p_adj_family)) %>%
+        transmute(comp = paste(group1, group2, sep = "-"), p = p_adj_family) %>%
+        deframe()
+      
+      letters <- multcompLetters(pvec, threshold = 0.05)$Letters
+      
+      tibble(
+        comparison_type = "Day within Strain x Treatment",
+        strain = unique(df_sub$strain),
+        treatment = unique(df_sub$treatment),
+        day = names(letters),
+        label = unname(letters)
+      ) %>%
+        complete(day = groups, fill = list(label = ""))
+    })
+  
+  # Treatment letters: within each strain x day
+  treatment_letters <- results_df %>%
+    filter(comparison_type == "Treatment within Strain x Day") %>%
+    group_by(strain, day) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      groups <- sort(unique(c(df_sub$group1, df_sub$group2)))
+      pvec <- df_sub %>%
+        filter(!is.na(p_adj_family)) %>%
+        transmute(comp = paste(group1, group2, sep = "-"), p = p_adj_family) %>%
+        deframe()
+      
+      letters <- multcompLetters(pvec, threshold = 0.05)$Letters
+      
+      tibble(
+        comparison_type = "Treatment within Strain x Day",
+        strain = unique(df_sub$strain),
+        day = unique(df_sub$day),
+        treatment = names(letters),
+        label = unname(letters)
+      ) %>%
+        complete(treatment = groups, fill = list(label = ""))
+    })
+  
+  # Strain letters: within each day x treatment
+  strain_letters <- results_df %>%
+    filter(comparison_type == "Strain within Day x Treatment") %>%
+    group_by(day, treatment) %>%
+    group_split() %>%
+    map_dfr(function(df_sub) {
+      groups <- sort(unique(c(df_sub$group1, df_sub$group2)))
+      pvec <- df_sub %>%
+        filter(!is.na(p_adj_family)) %>%
+        transmute(comp = paste(group1, group2, sep = "-"), p = p_adj_family) %>%
+        deframe()
+      
+      letters <- multcompLetters(pvec, threshold = 0.05)$Letters
+      
+      tibble(
+        comparison_type = "Strain within Day x Treatment",
+        day = unique(df_sub$day),
+        treatment = unique(df_sub$treatment),
+        strain = names(letters),
+        label = unname(letters)
+      ) %>%
+        complete(strain = groups, fill = list(label = ""))
+    })
+  
+  bind_rows(day_letters, treatment_letters, strain_letters)
+}
+
+#Helper function for formatting results
+format_pairwise_results <- function(df) {
+  df %>%
+    mutate(
+      strain = recode(
+        strain,
+        "bz555" = "BZ555",
+        "ua44" = "UA44",
+        .default = strain
+      ),
+      treatment = recode(
+        treatment,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH",
+        .default = treatment
+      ),
+      day = recode(
+        day,
+        "1" = "Day 1",
+        "3" = "Day 3",
+        "5" = "Day 5",
+        .default = day
+      ),
+      group1 = recode(
+        group1,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH",
+        "bz555" = "BZ555",
+        "ua44" = "UA44",
+        .default = group1
+      ),
+      group2 = recode(
+        group2,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH",
+        "bz555" = "BZ555",
+        "ua44" = "UA44",
+        .default = group2
+      ),
+      chisq = ifelse(is.na(chisq), NA, round(chisq, 4)),
+      p_value = ifelse(is.na(p_value), NA, round(p_value, 6)),
+      p_adj_family = ifelse(is.na(p_adj_family), NA, round(p_adj_family, 6))
+    ) %>%
+    rename(
+      Family = family,
+      Comparison_Type = comparison_type,
+      Strain = strain,
+      Treatment = treatment,
+      Day = day,
+      Group_1 = group1,
+      Group_2 = group2,
+      Chi_square = chisq,
+      Degrees_of_Freedom = df,
+      Raw_p_value = p_value,
+      Adjusted_p_value_family = p_adj_family
+    )
+}
+
+#Helper function for formatting the letters
+format_letters <- function(df) {
+  df %>%
+    mutate(
+      strain = recode(
+        strain,
+        "bz555" = "BZ555",
+        "ua44" = "UA44",
+        .default = strain
+      ),
+      treatment = recode(
+        treatment,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH",
+        .default = treatment
+      ),
+      day = recode(
+        day,
+        "1" = "Day 1",
+        "3" = "Day 3",
+        "5" = "Day 5",
+        "Day 1" = "Day 1",
+        "Day 3" = "Day 3",
+        "Day 5" = "Day 5",
+        .default = day
+      ),
+      strain = recode(
+        strain,
+        "Day 1" = "Day 1",
+        "Day 3" = "Day 3",
+        "Day 5" = "Day 5",
+        .default = strain
+      ),
+      treatment = recode(
+        treatment,
+        "Day 1" = "Day 1",
+        "Day 3" = "Day 3",
+        "Day 5" = "Day 5",
+        .default = treatment
+      )
+    ) %>%
+    rename(
+      Comparison_Type = comparison_type,
+      Strain = strain,
+      Treatment = treatment,
+      Day = day,
+      Letters = label
+    )
+}
+
+#TCA pairwise
+day_pairwise_tca <- run_day_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Ctrl", "TCA"),
+  family_label = "TCA Family"
+)
+
+treatment_pairwise_tca <- run_treatment_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Ctrl", "TCA"),
+  family_label = "TCA Family"
+)
+
+strain_pairwise_tca <- run_strain_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Ctrl", "TCA"),
+  family_label = "TCA Family"
+)
+
+all_pairwise_tca <- bind_rows(
+  day_pairwise_tca,
+  treatment_pairwise_tca,
+  strain_pairwise_tca
+) %>%
+  mutate(
+    p_adj_family = p.adjust(p_value, method = "bonferroni")
+  )
+
+tca_letters <- make_letters_table(all_pairwise_tca)
+
+tca_pairwise_results_cs <- format_pairwise_results(all_pairwise_tca)
+tca_letters_cs <- format_letters(tca_letters)
+
+#TCEOH pairwise
+day_pairwise_tceoh <- run_day_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Solv Ctrl", "TCEOH"),
+  family_label = "TCEOH Family"
+)
+
+treatment_pairwise_tceoh <- run_treatment_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Solv Ctrl", "TCEOH"),
+  family_label = "TCEOH Family"
+)
+
+strain_pairwise_tceoh <- run_strain_pairwise_family(
+  data = all_data_long,
+  treatment_levels = c("Solv Ctrl", "TCEOH"),
+  family_label = "TCEOH Family"
+)
+
+all_pairwise_tceoh <- bind_rows(
+  day_pairwise_tceoh,
+  treatment_pairwise_tceoh,
+  strain_pairwise_tceoh
+) %>%
+  mutate(
+    p_adj_family = p.adjust(p_value, method = "bonferroni")
+  )
+
+tceoh_letters <- make_letters_table(all_pairwise_tceoh)
+
+tceoh_pairwise_results_cs <- format_pairwise_results(all_pairwise_tceoh)
+tceoh_letters_cs <- format_letters(tceoh_letters)
+
+#View
+tca_pairwise_results_cs
+tca_letters_cs
+
+tceoh_pairwise_results_cs
+tceoh_letters_cs
+```
+
+#Cumulative Link Mixed Models
+``` {r stats - CLMM}
+#Answers a different question, though CLMM analysis isn't common in the field for C. elegans dendrite analysis. Models how the odds of being at a higher score will change with strain/treatment/day
+options(scipen = 999)
+
+#TCA
+model_tca <- clmm(
+  score ~ strain * day * treatment + (1 | id),
+  data = tca_data
+)
+
+summary(model_tca)
+
+model_coef_table_tca <- as.data.frame(summary(model_tca)$coefficients) %>%
+  rownames_to_column("term")
+
+treatment_emm_tca <- emmeans(
+  model_tca,
+  pairwise ~ treatment | strain * day,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+treatment_emmeans_tca <- as.data.frame(treatment_emm_tca$emmeans)
+treatment_contrasts_tca <- as.data.frame(treatment_emm_tca$contrasts)
+
+day_emm_tca <- emmeans(
+  model_tca,
+  pairwise ~ day | strain * treatment,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+day_emmeans_tca <- as.data.frame(day_emm_tca$emmeans)
+day_contrasts_tca <- as.data.frame(day_emm_tca$contrasts)
+
+strain_emm_tca <- emmeans(
+  model_tca,
+  pairwise ~ strain | day * treatment,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+strain_emmeans_tca <- as.data.frame(strain_emm_tca$emmeans)
+strain_contrasts_tca <- as.data.frame(strain_emm_tca$contrasts)
+
+#TCEOH
+model_tceoh <- clmm(
+  score ~ strain * day * treatment + (1 | id),
+  data = tceoh_data
+)
+
+summary(model_tceoh)
+
+model_coef_table_tceoh <- as.data.frame(summary(model_tceoh)$coefficients) %>%
+  rownames_to_column("term")
+
+treatment_emm_tceoh <- emmeans(
+  model_tceoh,
+  pairwise ~ treatment | strain * day,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+treatment_emmeans_tceoh <- as.data.frame(treatment_emm_tceoh$emmeans)
+treatment_contrasts_tceoh <- as.data.frame(treatment_emm_tceoh$contrasts)
+
+day_emm_tceoh <- emmeans(
+  model_tceoh,
+  pairwise ~ day | strain * treatment,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+day_emmeans_tceoh <- as.data.frame(day_emm_tceoh$emmeans)
+day_contrasts_tceoh <- as.data.frame(day_emm_tceoh$contrasts)
+
+strain_emm_tceoh <- emmeans(
+  model_tceoh,
+  pairwise ~ strain | day * treatment,
+  mode = "latent",
+  adjust = "tukey"
+)
+
+strain_emmeans_tceoh <- as.data.frame(strain_emm_tceoh$emmeans)
+strain_contrasts_tceoh <- as.data.frame(strain_emm_tceoh$contrasts)
+```
+
+``` {r cleaning up treatment emm tables}
+#Helper function
+make_treatment_table <- function(emm_df, contrast_df, treatment_order = NULL) {
+  
+  emm_df <- emm_df %>%
+    mutate(
+      treatment = as.character(treatment),
+      strain = as.character(strain),
+      day = as.character(day),
+      emmean = round(emmean, 4),
+      SE = round(SE, 4),
+      emm_se = paste0(sprintf("%.4f", emmean), " ± ", sprintf("%.4f", SE))
+    )
+  
+  if (!is.null(treatment_order)) {
+    emm_df <- emm_df %>%
+      mutate(treatment = factor(treatment, levels = treatment_order))
+  }
+  
+  emm_wide <- emm_df %>%
+    select(strain, day, treatment, emm_se) %>%
+    pivot_wider(
+      names_from = treatment,
+      values_from = emm_se
+    )
+  
+  contrast_clean <- contrast_df %>%
+    mutate(
+      strain = as.character(strain),
+      day = as.character(day),
+      estimate = round(estimate, 4),
+      z.ratio = round(z.ratio, 4),
+      p.value = ifelse(p.value < 0.0001, "<0.0001", sprintf("%.4f", round(p.value, 4)))
+    ) %>%
+    rename(
+      Difference = estimate,
+      `z-ratio` = z.ratio,
+      `p-value` = p.value
+    ) %>%
+    select(strain, day, Difference, `z-ratio`, `p-value`)
+  
+  final_table <- emm_wide %>%
+    left_join(contrast_clean, by = c("strain", "day")) %>%
+    mutate(
+      strain = recode(
+        strain,
+        "bz555" = "BZ555",
+        "ua44" = "UA44"
+      ),
+      day = recode(
+        day,
+        "1" = "Day 1",
+        "3" = "Day 3",
+        "5" = "Day 5"
+      )
+    ) %>%
+    arrange(strain, day)
+  
+  final_table
+}
+
+#TCA table
+tca_treatment_table <- make_treatment_table(
+  emm_df = treatment_emmeans_tca,
+  contrast_df = treatment_contrasts_tca,
+  treatment_order = c("Ctrl", "TCA")
+) %>%
+  rename(
+    Strain = strain,
+    Day = day,
+    `Vehicle Control EMM ± SE` = Ctrl,
+    `10 mM TCA EMM ± SE` = TCA
+  )
+
+#TCEOH Table
+tceoh_treatment_table <- make_treatment_table(
+  emm_df = treatment_emmeans_tceoh,
+  contrast_df = treatment_contrasts_tceoh,
+  treatment_order = c("Solv Ctrl", "TCEOH")
+) %>%
+  rename(
+    Strain = strain,
+    Day = day,
+    `Solvent Control EMM ± SE` = `Solv Ctrl`,
+    `5 mM TCEOH EMM ± SE` = TCEOH
+  )
+
+#View tables
+tca_treatment_table
+tceoh_treatment_table
+```
+
+``` {r cleaning up strain latent emm tables}
+make_strain_table <- function(contrast_df) {
+  contrast_df %>%
+    mutate(
+      day = as.character(day),
+      treatment = as.character(treatment),
+      contrast = as.character(contrast),
+      estimate = as.numeric(estimate),
+      SE = as.numeric(SE),
+      z.ratio = as.numeric(z.ratio),
+      p.value = as.numeric(p.value)
+    ) %>%
+    mutate(
+      Day = recode(
+        day,
+        "1" = "Day 1",
+        "3" = "Day 3",
+        "5" = "Day 5"
+      ),
+      Dose = recode(
+        treatment,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH"
+      ),
+      Comparison = recode(
+        contrast,
+        "bz555 - ua44" = "BZ555 - UA44",
+        "ua44 - bz555" = "UA44 - BZ555"
+      ),
+      Estimate = sprintf("%.4f", round(estimate, 4)),
+      SE = sprintf("%.4f", round(SE, 4)),
+      `z-ratio` = sprintf("%.4f", round(z.ratio, 4)),
+      `Adjusted p-value` = ifelse(
+        p.value < 0.0001,
+        "<0.0001",
+        sprintf("%.4f", round(p.value, 4))
+      )
+    ) %>%
+    select(
+      Day,
+      Dose,
+      Comparison,
+      Estimate,
+      SE,
+      `z-ratio`,
+      `Adjusted p-value`
+    ) %>%
+    arrange(Dose, Day)
+}
+
+# TCA strain table
+tca_strain_table <- make_strain_table(strain_contrasts_tca)
+
+# TCEOH strain table
+tceoh_strain_table <- make_strain_table(strain_contrasts_tceoh)
+
+# View them
+tca_strain_table
+tceoh_strain_table
+```
+
+``` {r cleaning up day latent emm tables}
+make_day_table <- function(emm_df, contrast_df) {
+  
+  emm_df_clean <- emm_df %>%
+    mutate(
+      strain = as.character(strain),
+      day = as.character(day),
+      treatment = as.character(treatment),
+      emmean = as.numeric(emmean),
+      SE = as.numeric(SE),
+      emmean = round(emmean, 4),
+      SE = round(SE, 4),
+      emm_se = paste0(sprintf("%.4f", emmean), " ± ", sprintf("%.4f", SE))
+    ) %>%
+    mutate(
+      day_label = recode(
+        day,
+        "1" = "Day 1 EMM ± SE",
+        "3" = "Day 3 EMM ± SE",
+        "5" = "Day 5 EMM ± SE"
+      )
+    )
+  
+  emm_wide <- emm_df_clean %>%
+    select(strain, treatment, day_label, emm_se) %>%
+    pivot_wider(
+      names_from = day_label,
+      values_from = emm_se
+    )
+  
+  contrast_clean <- contrast_df %>%
+    mutate(
+      strain = as.character(strain),
+      treatment = as.character(treatment),
+      contrast = as.character(contrast),
+      estimate = as.numeric(estimate),
+      z.ratio = as.numeric(z.ratio),
+      p.value = as.numeric(p.value)
+    ) %>%
+    mutate(
+      Strain = recode(
+        strain,
+        "bz555" = "BZ555",
+        "ua44" = "UA44"
+      ),
+      Dose = recode(
+        treatment,
+        "Ctrl" = "Vehicle Control",
+        "TCA" = "10 mM TCA",
+        "Solv Ctrl" = "Solvent Control",
+        "TCEOH" = "5 mM TCEOH"
+      ),
+      Comparison = recode(
+        contrast,
+        "1 - 3" = "Day 1 - Day 3",
+        "1 - 5" = "Day 1 - Day 5",
+        "3 - 5" = "Day 3 - Day 5"
+      ),
+      Difference = sprintf("%.4f", round(estimate, 4)),
+      `z-ratio` = sprintf("%.4f", round(z.ratio, 4)),
+      `Adjusted p-value` = ifelse(
+        p.value < 0.0001,
+        "<0.0001",
+        sprintf("%.4f", round(p.value, 4))
+      )
+    ) %>%
+    select(
+      strain,
+      treatment,
+      Strain,
+      Dose,
+      Comparison,
+      Difference,
+      `z-ratio`,
+      `Adjusted p-value`
+    )
+  
+  final_table <- contrast_clean %>%
+    left_join(emm_wide, by = c("strain", "treatment")) %>%
+    select(
+      Strain,
+      Dose,
+      `Day 1 EMM ± SE`,
+      `Day 3 EMM ± SE`,
+      `Day 5 EMM ± SE`,
+      Comparison,
+      Difference,
+      `z-ratio`,
+      `Adjusted p-value`
+    ) %>%
+    arrange(Dose, Strain, Comparison)
+  
+  final_table
+}
+
+# TCA day table
+tca_day_table <- make_day_table(
+  emm_df = day_emmeans_tca,
+  contrast_df = day_contrasts_tca
+)
+
+# TCEOH day table
+tceoh_day_table <- make_day_table(
+  emm_df = day_emmeans_tceoh,
+  contrast_df = day_contrasts_tceoh
+)
+
+# View tables
+tca_day_table
+tceoh_day_table
+```
+
+#Data Visualization and Export
+``` {r plotting}
+plot_data_tca <- all_data_long %>%
+  filter(treatment %in% c("Ctrl", "TCA")) %>%
+  filter(score %in% c(0, 1, 2, 3, 4)) %>%
+  mutate(
+    score = factor(score, levels = 0:4),
+    day = factor(day, levels = c(1, 3, 5)),
+    treatment = factor(treatment, levels = c("Ctrl", "TCA")),
+    strain = factor(strain, levels = c("bz555", "ua44"))
+  ) %>%
+  group_by(strain, day, treatment, score) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  tidyr::complete(
+    strain,
+    day,
+    treatment,
+    score,
+    fill = list(n = 0)
+  ) %>%
+  group_by(strain, day, treatment) %>%
+  mutate(
+    proportion = n / sum(n)
+  ) %>%
+  ungroup()
+
+tca_plot <- ggplot(plot_data_tca, aes(x = treatment, y = proportion, fill = score)) +
+  geom_col(width = 0.8) +
+  facet_grid(
+    strain ~ day,
+    labeller = labeller(
+      strain = c(
+        bz555 = "BZ555",
+        ua44 = "UA44"
+      ),
+      day = c(
+        `1` = "Day 1",
+        `3` = "Day 3",
+        `5` = "Day 5"
+      )
+    )
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Ctrl" = "Vehicle Control",
+      "TCA" = "10 mM TCA"
+    )
+  ) +
+  scale_fill_viridis_d(
+  option = "viridis",
+  drop = FALSE
+) +
+  scale_y_continuous(limits = c(0, 1.10),
+                     breaks = seq(0, 1, by = 0.25),
+                     labels = percent_format()) +
+  labs(
+    x = "Treatment",
+    y = "Proportion of Dendrite Scores",
+    fill = "Score"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+plot_data_tceoh <- all_data_long %>%
+  filter(treatment %in% c("Solv Ctrl", "TCEOH")) %>%
+  filter(score %in% c(0, 1, 2, 3, 4)) %>%
+  mutate(
+    score = factor(score, levels = 0:4),
+    day = factor(day, levels = c(1, 3, 5)),
+    treatment = factor(treatment, levels = c("Solv Ctrl", "TCEOH")),
+    strain = factor(strain, levels = c("bz555", "ua44"))
+  ) %>%
+  group_by(strain, day, treatment, score) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  tidyr::complete(
+    strain,
+    day,
+    treatment,
+    score,
+    fill = list(n = 0)
+  ) %>%
+  group_by(strain, day, treatment) %>%
+  mutate(
+    proportion = n / sum(n)
+  ) %>%
+  ungroup()
+
+tceoh_plot <- ggplot(plot_data_tceoh, aes(x = treatment, y = proportion, fill = score)) +
+  geom_col(width = 0.8) +
+  facet_grid(
+    strain ~ day,
+    labeller = labeller(
+      strain = c(
+        bz555 = "BZ555",
+        ua44 = "UA44"
+      ),
+      day = c(
+        `1` = "Day 1",
+        `3` = "Day 3",
+        `5` = "Day 5"
+      )
+    )
+  ) +
+  scale_x_discrete(
+    labels = c(
+      "Solv Ctrl" = "Solvent Control",
+      "TCEOH" = "5 mM TCEOH"
+    )
+  ) +
+  scale_y_continuous(limits = c(0, 1.10),
+                     breaks = seq(0, 1, by = 0.25),
+                     labels = percent_format()) +
+  labs(
+    x = "Treatment",
+    y = "Proportion of Dendrite Scores",
+    fill = "Score"
+  ) +
+  scale_fill_viridis_d(
+  option = "viridis",
+  drop = FALSE
+) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+``` {r saving plots}
+ggsave(
+  filename = "tca_plot.jpg",
+  plot = tca_plot,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = "tceoh_plot.jpg",
+  plot = tceoh_plot,
+  width = 6,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+```
+
+``` {r rounding the stat tables - CLMM}
+round_numeric <- function(df, digits = 4) {
+  df %>%
+    mutate(
+      across(
+        where(is.numeric),
+        ~ format(round(.x, digits), nsmall = digits, scientific = FALSE)
+      )
+    )
+}
+
+format_pvals <- function(df) {
+  p_cols <- names(df)[grepl("p.value|p_value", names(df), ignore.case = TRUE)]
+  
+  df %>%
+    mutate(
+      across(
+        all_of(p_cols),
+        ~ ifelse(as.numeric(.) < 0.0001, "<0.0001", sprintf("%.4f", as.numeric(.)))
+      )
+    )
+}
+
+model_coef_table_tca <- model_coef_table_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+treatment_emmeans_tca <- treatment_emmeans_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+treatment_contrasts_tca <- treatment_contrasts_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+day_emmeans_tca <- day_emmeans_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+day_contrasts_tca <- day_contrasts_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+strain_emmeans_tca <- strain_emmeans_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+strain_contrasts_tca <- strain_contrasts_tca %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+model_coef_table_tceoh <- model_coef_table_tceoh %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+treatment_emmeans_tceoh <- treatment_emmeans_tceoh %>%
+  round_numeric() %>% 
+  format_pvals()
+
+treatment_contrasts_tceoh <- treatment_contrasts_tceoh %>%
+  round_numeric() %>% 
+  format_pvals()
+
+day_emmeans_tceoh <- day_emmeans_tceoh %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+day_contrasts_tceoh <- day_contrasts_tceoh %>% 
+  round_numeric() %>% 
+  format_pvals()
+
+strain_emmeans_tceoh <- strain_emmeans_tceoh %>%
+  round_numeric() %>% 
+  format_pvals()
+
+strain_contrasts_tceoh <- strain_contrasts_tceoh %>%
+  round_numeric() %>% 
+  format_pvals()
+```
+
+``` {r exporting stat tables - CLMM}
+write_xlsx(
+  list(
+    TCA_Model_Coefficients     = model_coef_table_tca,
+    TCA_Treatment_EMMeans      = treatment_emmeans_tca,
+    TCA_Treatment_Contrasts    = treatment_contrasts_tca,
+    TCA_Day_EMMeans            = day_emmeans_tca,
+    TCA_Day_Contrasts          = day_contrasts_tca,
+    TCA_Strain_EMMeans         = strain_emmeans_tca,
+    TCA_Strain_Contrasts       = strain_contrasts_tca,
+    TCEOH_Model_Coefficients   = model_coef_table_tceoh,
+    TCEOH_Treatment_EMMeans    = treatment_emmeans_tceoh,
+    TCEOH_Treatment_Contrasts  = treatment_contrasts_tceoh,
+    TCEOH_Day_EMMeans          = day_emmeans_tceoh,
+    TCEOH_Day_Contrasts        = day_contrasts_tceoh,
+    TCEOH_Strain_EMMeans       = strain_emmeans_tceoh,
+    TCEOH_Strain_Contrasts     = strain_contrasts_tceoh
+  ),
+  path = "ordinal_model_results.xlsx"
+)
+
+write_xlsx(
+  list(
+   TCA_Treatment_Table = tca_treatment_table, 
+   TCEOH_Treatment_Table = tceoh_treatment_table,
+   TCA_Strain_Table = tca_strain_table, 
+   TCEOH_Strain_Table = tceoh_strain_table,
+   TCA_Day_Table = tca_day_table, 
+   TCEOH_Day_Table = tceoh_day_table 
+  ),
+  path = "ordinal_model_results_manuscript tables.xlsx"
+)
+```
+
+``` {r exporting stat tables - Chi Square}
+write_xlsx(
+  list(
+    TCA_chisq_results = tca_pairwise_results_cs,
+    TCEOH_chisq_results= tceoh_pairwise_results_cs,
+    TCA_chisq_letters = tca_letters_cs,
+    TCEOH_chisq_letters = tceoh_letters_cs 
+    ),
+  path = "chi_square_pairwise_results.xlsx"
+)
+```
