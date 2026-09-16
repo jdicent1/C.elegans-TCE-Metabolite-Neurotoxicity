@@ -1,0 +1,988 @@
+---
+title: "COPAS Analysis - Filtering and Comparing Dosing Mediums"
+author: "Jocelyn Dicent"
+date: "2026-05-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(janitor)
+library(readxl)
+library(ggplot2)
+library(mclust)
+library(tidyverse)
+library(car)
+library(rstatix)
+library(multcompView)
+library(DescTools)
+```
+
+#Reading in the Data
+```{r reading in data and cleaning it}
+#expt from 8/29
+expt_1_6well <- read.delim("COPAS Data/8_29_24/tca_worms_final_2_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_1 <- read_xlsx("COPAS Data/8_29_24/metadata_tcaa_08292024.xlsx")
+
+expt_1_cleaned <- expt_1_6well %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_1, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "50 mM", "25 mM", "10 mM", "5 mM", "2.5 mM", "1 mM", "500 uM", "250 uM", "100 uM", "M9", "Untreated"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_1_6well_cleaned_N2 <- expt_1_cleaned %>%
+  filter(strain == "N2") %>%
+  select(-strain) %>%
+  mutate(experiment = "1")
+
+#expt from 8/30
+expt_2_6well <- read.delim("COPAS Data/8_30_24/tcaa_final_083024_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_2 <- read_xlsx("COPAS Data/8_30_24/metadata_tcaa_08302024.xlsx")
+
+expt_2_cleaned <- expt_2_6well %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_2, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "50 mM", "25 mM", "10 mM", "5 mM", "2.5 mM", "1 mM", "500 uM", "250 uM", "100 uM", "M9", "Untreated"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_2_6well_cleaned_N2 <- expt_2_cleaned %>%
+  filter(strain == "N2") %>%
+  select(-strain) %>%
+  mutate(experiment = "2")
+
+#expt from 9/12
+expt_3_multi <- read.delim("COPAS Data/9_12_24/all_expt_final_091224_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_3_multi <- read_xlsx("COPAS Data/9_12_24/metadata_09122024.xlsx")
+
+expt_3_multi_cleaned <- expt_3_multi %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_3_multi, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "Untreated", "BLANK"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_3_multi_cleaned_N2 <- expt_3_multi_cleaned %>%
+  filter(strain == "N2") %>%
+  filter(!treatment == "Water") %>%
+  select(-strain) %>%
+  mutate(experiment = "1")
+
+expt_3_multi_6well <- expt_3_multi_cleaned_N2 %>%
+  filter(treatment == "well plate")
+
+expt_3_multi_liquid_culture <- expt_3_multi_cleaned_N2 %>%
+  filter(treatment == "liquid culture")
+
+expt_3_multi_agar_volume <- expt_3_multi_cleaned_N2 %>%
+  filter(!treatment == "well plate") %>%
+  filter(!treatment == "liquid culture")
+
+#expt from 9/13
+expt_4_multi <- read.delim("COPAS Data/9_13_24/all_expt_091324_jd_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_4_multi <- read_xlsx("COPAS Data/9_13_24/metadata_09132024.xlsx")
+
+expt_4_multi_cleaned <- expt_4_multi %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_4_multi, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "Untreated", "BLANK"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_4_multi_cleaned_N2 <- expt_4_multi_cleaned %>%
+  filter(strain == "N2") %>%
+  filter(!treatment == "Water") %>%
+  select(-strain) %>%
+  mutate(experiment = "2")
+
+expt_4_multi_6well <- expt_4_multi_cleaned_N2 %>%
+  filter(treatment == "well plate")
+
+expt_4_multi_liquid_culture <- expt_4_multi_cleaned_N2 %>%
+  filter(treatment == "liquid culture")
+
+expt_4_multi_agar_volume <- expt_4_multi_cleaned_N2 %>%
+  filter(!treatment == "well plate") %>%
+  filter(!treatment == "liquid culture")
+
+#expt from 9/19
+expt_5_6cm <- read.delim("COPAS Data/9_19_24/6cm_plate_expt_09192024_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_5_6cm <- read_xlsx("COPAS Data/9_19_24/metadata_09192024.xlsx")
+
+expt_5_6cm_cleaned <- expt_5_6cm %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_5_6cm, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "BLANK"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_5_6cm_cleaned_N2 <- expt_5_6cm_cleaned %>%
+  filter(strain == "N2") %>%
+  filter(!treatment == "Water") %>%
+  select(-strain) %>%
+  mutate(experiment = "1")
+
+#expt from 9/20
+expt_6_6cm <- read.delim("COPAS Data/9_20_24/6cm_plate_expt_09202024_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
+  clean_names
+
+metadata_expt_6_6cm <- read_xlsx("COPAS Data/9_20_24/metadata_09202024.xlsx")
+
+expt_6_6cm_cleaned <- expt_6_6cm %>%
+  select(id, source_well, tof, extinction, ph_extinction, pw_extinction) %>%
+  left_join(metadata_expt_6_6cm, by = "source_well") %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "BLANK"))) %>%
+  mutate(norm_ext = extinction/tof) %>%
+  mutate(norm_ph_ext = ph_extinction/tof)
+
+expt_6_6cm_cleaned_N2 <- expt_6_6cm_cleaned %>%
+  filter(strain == "N2") %>%
+  filter(!treatment == "Water") %>%
+  select(-strain) %>%
+  mutate(experiment = "2")
+```
+
+```{r combining datasets}
+#summary of datasets I have right now
+#6 well: expt_1_6well_cleaned_N2
+#expt_2_6well_cleaned_N2
+#expt_3_multi_6well
+#expt_4_multi_6well
+
+#Agar volume: expt_3_multi_agar_volume
+#expt_4_multi_agar_volume
+
+#Liquid Culture: expt_3_multi_liquid_culture
+#expt_4_multi_liquid_culture
+
+#6cm plates: expt_5_6cm_cleaned_N2
+#expt_6_6cm_cleaned_N2
+
+#compiled experiments: all_6_well, all_agar_volume, all_liquid_culture, all_6cm
+
+all_6_well <- bind_rows(
+  expt_1_6well_cleaned_N2 %>% mutate(experiment = "1"),
+  expt_2_6well_cleaned_N2 %>% mutate(experiment = "2"),
+  expt_3_multi_6well %>% mutate(experiment = "3"),
+  expt_4_multi_6well %>% mutate(experiment = "4")) %>%
+  filter(dose %in% c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "Untreated")) %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "50 mM", "25 mM", "10 mM", "5 mM",
+                                         "2.5 mM", "1 mM", "500 uM", "250 uM", "100 uM",
+                                         "M9", "Untreated")))
+
+all_agar_volume <- bind_rows(
+  expt_3_multi_agar_volume %>% mutate(experiment = "1"),
+  expt_4_multi_agar_volume %>% mutate(experiment = "2"))
+
+all_liquid_culture <- bind_rows(
+  expt_3_multi_liquid_culture %>% mutate(experiment = "1"),
+  expt_4_multi_liquid_culture %>% mutate(experiment = "2")) %>%
+  filter(!tof > 1400) %>% #chosen after looking at the data and seeing some extraneous points that are likely debris
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM",
+                                         "M9", "Untreated", "BLANK")))
+
+all_6cm <- bind_rows(
+  expt_5_6cm_cleaned_N2 %>% mutate(experiment = "1"),
+  expt_6_6cm_cleaned_N2 %>% mutate(experiment = "2")) %>%
+  mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "BLANK")))
+```
+
+#Normalizing the Data pre-filtering and Descriptive Stats
+``` {r normalization to the control within each experiment}
+# all_6_well
+all_6_well_norm <- all_6_well %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+# all_agar_volume
+all_agar_volume_norm <- all_agar_volume %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[treatment == "3 mL agar"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+# all_liquid_culture
+all_liquid_culture_norm <- all_liquid_culture %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+# all_6cm
+all_6cm_norm <- all_6cm %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+```
+
+``` {r descriptive statistics for each expt + compiled experiments - no filtering}
+desc_stats <- function(df, group_var) {
+  df %>%
+    group_by(experiment, {{ group_var }}) %>%
+    summarise(
+      count  = n(),
+      mean   = mean(percent_control, na.rm = TRUE),
+      sd     = sd(percent_control, na.rm = TRUE),
+      median = median(percent_control, na.rm = TRUE),
+      IQR    = IQR(percent_control, na.rm = TRUE),
+      min    = min(percent_control, na.rm = TRUE),
+      max    = max(percent_control, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+# per experiment
+stats_6well_per_expt          <- desc_stats(all_6_well_norm, dose)
+stats_agar_volume_per_expt    <- desc_stats(all_agar_volume_norm, treatment)
+stats_liquid_culture_per_expt <- desc_stats(all_liquid_culture_norm, dose)
+stats_6cm_per_expt            <- desc_stats(all_6cm_norm, dose)
+
+# experiments combined
+desc_stats_combined <- function(df, group_var) {
+  df %>%
+    group_by({{ group_var }}) %>%
+    summarise(
+      count  = n(),
+      mean   = mean(percent_control, na.rm = TRUE),
+      sd     = sd(percent_control, na.rm = TRUE),
+      median = median(percent_control, na.rm = TRUE),
+      IQR    = IQR(percent_control, na.rm = TRUE),
+      min    = min(percent_control, na.rm = TRUE),
+      max    = max(percent_control, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+stats_6well_combined          <- desc_stats_combined(all_6_well_norm, dose)
+stats_agar_volume_combined    <- desc_stats_combined(all_agar_volume_norm, treatment)
+stats_liquid_culture_combined <- desc_stats_combined(all_liquid_culture_norm, dose)
+stats_6cm_combined            <- desc_stats_combined(all_6cm_norm, dose)
+```
+
+#Filtering the Data
+``` {r pca and kmeans clustering}
+library(FactoMineR)
+library(factoextra)
+library(ggplot2)
+
+process_pca_kmeans <- function(dataset, plot_title) {
+  dataset <- dataset[complete.cases(dataset[, c("tof", "extinction", "ph_extinction", "pw_extinction", "norm_ext")]), ]
+  
+  pca_result <- PCA(dataset[, c("tof", "extinction", "ph_extinction", "pw_extinction", "norm_ext")], scale.unit = TRUE)
+  
+  pca_plot <- fviz_pca_ind(pca_result, geom = "point", 
+                           addEllipses = TRUE, title = "PCA of TOF, EXT, PH EXT, PW EXT, and norm.EXT")
+  
+  pca_data <- pca_result$ind$coord[, 1:2]
+  
+  set.seed(123)
+  kmeans_pca_result <- kmeans(pca_data, centers = 3)
+  
+  dataset$pca_kmeans_cluster <- kmeans_pca_result$cluster
+  
+  kmeans_plot <- ggplot(dataset, aes(x = tof, y = extinction, color = factor(pca_kmeans_cluster))) +
+    geom_point(size = 1.5, alpha = 0.6) + 
+    labs(title = plot_title, x = "Time of Flight (TOF)", y = "Extinction", color = "Cluster") +
+    scale_color_manual(values = c("1" = "#E07B54", "2" = "#4E79A7", "3" = "#6BAF92")) +
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.8),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.ticks = element_line(color = "black"),
+      legend.title = element_text(face = "bold")
+    )
+  
+  return(list(dataset = dataset, pca_plot = pca_plot, kmeans_plot = kmeans_plot))
+}
+
+datasets <- list(expt_1_6well_cleaned_N2, expt_2_6well_cleaned_N2, expt_3_multi_6well,
+                 expt_4_multi_6well, expt_5_6cm_cleaned_N2, expt_6_6cm_cleaned_N2,
+                 expt_3_multi_liquid_culture, expt_4_multi_liquid_culture, 
+                 expt_3_multi_agar_volume, expt_4_multi_agar_volume)
+
+plot_titles <- c("Experiment 1 - 6-Well Plate", "Experiment 2 - 6-Well Plate",
+                 "Experiment 3 - 6-Well Plate", "Experiment 4 - 6-Well Plate",
+                 "Experiment 1 - 6 cm Plate", "Experiment 2 - 6 cm Plate",
+                 "Experiment 1 - Liquid Culture", "Experiment 2 - Liquid Culture",
+                 "Experiment 1 - Agar Volume", "Experiment 2 - Agar Volume")
+
+set.seed(123)
+processed_results <- mapply(process_pca_kmeans, datasets, plot_titles, SIMPLIFY = FALSE)
+
+plot_names <- c("clustering_expt_1_6well", "clustering_expt_2_6well", "clustering_expt_3_6well",
+                "clustering_expt_4_6well", "clustering_expt_1_6cm", "clustering_expt_2_6cm", 
+                "clustering_expt_1_liquid_culture", "clustering_expt_2_liquid_culture", 
+                "clustering_expt_1_agar_volume", "clustering_expt_2_agar_volume")
+
+for (i in seq_along(plot_names)) {
+  assign(plot_names[i], processed_results[[i]]$kmeans_plot)
+}
+
+# view plots in viewer
+clustering_expt_1_6well; clustering_expt_2_6well; clustering_expt_3_6well; clustering_expt_4_6well
+clustering_expt_1_6cm; clustering_expt_2_6cm
+clustering_expt_1_liquid_culture; clustering_expt_2_liquid_culture
+clustering_expt_1_agar_volume; clustering_expt_2_agar_volume
+```
+
+``` {r filtering based on each individual clustering technique, 3 clusters}
+filtered_clustering_expt_1_6well <- processed_results[[1]]$dataset %>%
+  filter(!pca_kmeans_cluster == 3)
+
+filtered_clustering_expt_2_6well <- processed_results[[2]]$dataset %>%
+  filter(!pca_kmeans_cluster == 2)
+
+filtered_clustering_expt_3_6well <- processed_results[[3]]$dataset %>%
+  filter(!pca_kmeans_cluster == 3)
+
+filtered_clustering_expt_4_6well <- processed_results[[4]]$dataset %>%
+  filter(!pca_kmeans_cluster == 3)
+
+filtered_clustering_expt_1_6cm <- processed_results[[5]]$dataset %>%
+  filter(!pca_kmeans_cluster == 1)
+
+filtered_clustering_expt_2_6cm <- processed_results[[6]]$dataset %>%
+  filter(!pca_kmeans_cluster == 1)
+
+filtered_clustering_expt_1_liquid_culture <- processed_results[[7]]$dataset %>%
+  filter(!pca_kmeans_cluster == 3)
+
+filtered_clustering_expt_2_liquid_culture <- processed_results[[8]]$dataset %>%
+  filter(!pca_kmeans_cluster == 1)
+
+filtered_clustering_expt_1_agar_volume <- processed_results[[9]]$dataset %>%
+  filter(!pca_kmeans_cluster == 2)
+
+filtered_clustering_expt_2_agar_volume <- processed_results[[10]]$dataset %>%
+  filter(!pca_kmeans_cluster == 3)
+
+post_filter_combo_all_6_well <- bind_rows(filtered_clustering_expt_1_6well, 
+                                          filtered_clustering_expt_2_6well, 
+                                          filtered_clustering_expt_3_6well, 
+                                          filtered_clustering_expt_4_6well) %>%
+  filter(dose %in% c("100 mM", "10 mM", "1 mM", "100 uM", "M9"))
+
+post_filter_combo_all_6cm <- bind_rows(filtered_clustering_expt_1_6cm, 
+                                       filtered_clustering_expt_2_6cm)
+
+post_filter_combo_all_liquid_culture <- bind_rows(filtered_clustering_expt_1_liquid_culture,
+                                                  filtered_clustering_expt_2_liquid_culture)
+
+post_filter_combo_all_agar_volume <- bind_rows(filtered_clustering_expt_1_agar_volume,
+                                               filtered_clustering_expt_2_agar_volume)
+```
+
+``` {r post-filtered plots with clusters}
+# post-filter plots
+post_filter_datasets <- list(
+  filtered_clustering_expt_1_6well, filtered_clustering_expt_2_6well,
+  filtered_clustering_expt_3_6well, filtered_clustering_expt_4_6well,
+  filtered_clustering_expt_1_6cm, filtered_clustering_expt_2_6cm,
+  filtered_clustering_expt_1_liquid_culture, filtered_clustering_expt_2_liquid_culture,
+  filtered_clustering_expt_1_agar_volume, filtered_clustering_expt_2_agar_volume
+)
+
+post_filter_titles <- c("Experiment 1 - 6-Well Plate (Post-Filter)", "Experiment 2 - 6-Well Plate (Post-Filter)",
+                        "Experiment 3 - 6-Well Plate (Post-Filter)", "Experiment 4 - 6-Well Plate (Post-Filter)",
+                        "Experiment 1 - 6 cm Plate (Post-Filter)", "Experiment 2 - 6 cm Plate (Post-Filter)",
+                        "Experiment 1 - Liquid Culture (Post-Filter)", "Experiment 2 - Liquid Culture (Post-Filter)",
+                        "Experiment 1 - Agar Volume (Post-Filter)", "Experiment 2 - Agar Volume (Post-Filter)")
+
+post_filter_plot_names <- c("post_filter_expt_1_6well", "post_filter_expt_2_6well",
+                            "post_filter_expt_3_6well", "post_filter_expt_4_6well",
+                            "post_filter_expt_1_6cm", "post_filter_expt_2_6cm",
+                            "post_filter_expt_1_liquid_culture", "post_filter_expt_2_liquid_culture",
+                            "post_filter_expt_1_agar_volume", "post_filter_expt_2_agar_volume")
+
+# extract pre-filter datasets for axis limits
+pre_filter_datasets <- lapply(processed_results, `[[`, "dataset")
+
+post_filter_plots <- mapply(function(pre_dataset, post_dataset, title) {
+  
+  x_min <- min(pre_dataset$tof, na.rm = TRUE)
+  x_max <- max(pre_dataset$tof, na.rm = TRUE)
+  y_min <- min(pre_dataset$extinction, na.rm = TRUE)
+  y_max <- max(pre_dataset$extinction, na.rm = TRUE)
+  
+  ggplot(post_dataset, aes(x = tof, y = extinction, color = factor(pca_kmeans_cluster))) +
+    geom_point(size = 1.5, alpha = 0.6) +
+    labs(title = title, x = "Time of Flight (TOF)", y = "Extinction", color = "Cluster") +
+    scale_color_manual(values = c("1" = "#E07B54", "2" = "#4E79A7", "3" = "#6BAF92")) +
+    coord_cartesian(xlim = c(x_min, x_max), ylim = c(y_min, y_max)) +
+    theme_bw(base_size = 12) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.title = element_text(face = "bold"),
+      axis.text = element_text(color = "black"),
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.8),
+      plot.title = element_text(face = "bold", hjust = 0.5),
+      axis.ticks = element_line(color = "black"),
+      legend.title = element_text(face = "bold")
+    )
+}, pre_filter_datasets, post_filter_datasets, post_filter_titles, SIMPLIFY = FALSE)
+
+for (i in seq_along(post_filter_plot_names)) {
+  assign(post_filter_plot_names[i], post_filter_plots[[i]])
+}
+
+# view plots
+post_filter_expt_1_6well; post_filter_expt_2_6well; post_filter_expt_3_6well; post_filter_expt_4_6well
+post_filter_expt_1_6cm; post_filter_expt_2_6cm
+post_filter_expt_1_liquid_culture; post_filter_expt_2_liquid_culture
+post_filter_expt_1_agar_volume; post_filter_expt_2_agar_volume
+```
+
+``` {r post-filtered plots}
+prism_theme <- theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+create_plot_ext_vs_tof_per_dose <- function(data, dataset_name) {
+  data <- data %>% filter(dose %in% c("100 mM", "10 mM", "1 mM", "M9"))
+  
+  ggplot(data, aes(x = tof, y = extinction)) +
+    geom_point(size = 1.5, alpha = 0.6, color = "steelblue") +
+    labs(title = paste("Extinction vs TOF - Per Dose (", dataset_name, ")", sep = ""),
+         x = "Time of Flight (TOF)",
+         y = "Extinction") +
+    scale_x_continuous(expand = expansion(mult = c(0.05, 0.05)), limits = c(0, NA)) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.05)), limits = c(0, NA)) +
+    prism_theme +
+    facet_wrap(~ dose, scales = "free_x")
+}
+
+create_plot_ext_vs_tof_per_dose_alt <- function(data, dataset_name) {
+  ggplot(data, aes(x = tof, y = extinction)) +
+    geom_point(size = 1.5, alpha = 0.6, color = "steelblue") +
+    labs(title = paste("Extinction vs TOF - Per Dose (", dataset_name, ")", sep = ""),
+         x = "Time of Flight (TOF)",
+         y = "Extinction") +
+    scale_x_continuous(expand = expansion(mult = c(0.05, 0.05)), limits = c(0, NA)) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.05)), limits = c(0, NA)) +
+    prism_theme +
+    facet_wrap(~ treatment, scales = "free_x")
+}
+
+
+plot1 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_1_6well, "Experiment 1 - 6 Well - Filtered")
+plot2 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_2_6well, "Experiment 2 - 6 Well - Filtered")
+plot3 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_3_6well, "Experiment 3 - 6 Well - Filtered")
+plot4 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_4_6well, "Experiment 4 - 6 Well - Filtered")
+plot5 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_1_liquid_culture, "Experiment 1 - Liquid Culture - Filtered")
+plot6 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_2_liquid_culture, "Experiment 2 - Liquid Culture - Filtered")
+plot7 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_1_6cm, "Experiment 1 - 6 cm Plate - Filtered")
+plot8 <- create_plot_ext_vs_tof_per_dose(filtered_clustering_expt_2_6cm, "Experiment 2 - 6 cm Plate - Filtered")
+plot9 <- create_plot_ext_vs_tof_per_dose_alt(filtered_clustering_expt_1_agar_volume, "Experiment 1 - Agar Volume - Filtered")
+plot10 <- create_plot_ext_vs_tof_per_dose_alt(filtered_clustering_expt_2_agar_volume, "Experiment 2 - Agar Volume - Filtered")
+
+# view plots
+plot1; plot2; plot3; plot4; plot5
+plot6; plot7; plot8; plot9; plot10
+```
+
+``` {r saving plots}
+# create folders if they don't exist
+dir.create("Plots/pre_filter_clustering", recursive = TRUE, showWarnings = FALSE)
+dir.create("Plots/post_filter_clustering", recursive = TRUE, showWarnings = FALSE)
+dir.create("Plots/post_filter_ext_vs_tof", recursive = TRUE, showWarnings = FALSE)
+
+# pre-filter clustering plots
+ggsave("Plots/pre_filter_clustering/clustering_expt_1_6well.jpeg", plot = clustering_expt_1_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_2_6well.jpeg", plot = clustering_expt_2_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_3_6well.jpeg", plot = clustering_expt_3_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_4_6well.jpeg", plot = clustering_expt_4_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_1_6cm.jpeg", plot = clustering_expt_1_6cm, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_2_6cm.jpeg", plot = clustering_expt_2_6cm, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_1_liquid_culture.jpeg", plot = clustering_expt_1_liquid_culture, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_2_liquid_culture.jpeg", plot = clustering_expt_2_liquid_culture, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_1_agar_volume.jpeg", plot = clustering_expt_1_agar_volume, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/pre_filter_clustering/clustering_expt_2_agar_volume.jpeg", plot = clustering_expt_2_agar_volume, dpi = 300, width = 6, height = 5, units = "in")
+
+# post-filter clustering plots
+ggsave("Plots/post_filter_clustering/post_filter_expt_1_6well.jpeg", plot = post_filter_expt_1_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_2_6well.jpeg", plot = post_filter_expt_2_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_3_6well.jpeg", plot = post_filter_expt_3_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_4_6well.jpeg", plot = post_filter_expt_4_6well, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_1_6cm.jpeg", plot = post_filter_expt_1_6cm, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_2_6cm.jpeg", plot = post_filter_expt_2_6cm, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_1_liquid_culture.jpeg", plot = post_filter_expt_1_liquid_culture, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_2_liquid_culture.jpeg", plot = post_filter_expt_2_liquid_culture, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_1_agar_volume.jpeg", plot = post_filter_expt_1_agar_volume, dpi = 300, width = 6, height = 5, units = "in")
+ggsave("Plots/post_filter_clustering/post_filter_expt_2_agar_volume.jpeg", plot = post_filter_expt_2_agar_volume, dpi = 300, width = 6, height = 5, units = "in")
+
+# post-filter ext vs tof plots
+ggsave("Plots/post_filter_ext_vs_tof/plot1_expt_1_6well.jpeg", plot = plot1, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot2_expt_2_6well.jpeg", plot = plot2, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot3_expt_3_6well.jpeg", plot = plot3, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot4_expt_4_6well.jpeg", plot = plot4, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot5_expt_1_liquid_culture.jpeg", plot = plot5, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot6_expt_2_liquid_culture.jpeg", plot = plot6, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot7_expt_1_6cm.jpeg", plot = plot7, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot8_expt_2_6cm.jpeg", plot = plot8, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot9_expt_1_agar_volume.jpeg", plot = plot9, dpi = 300, width = 10, height = 8, units = "in")
+ggsave("Plots/post_filter_ext_vs_tof/plot10_expt_2_agar_volume.jpeg", plot = plot10, dpi = 300, width = 10, height = 8, units = "in")
+```
+
+#Agar Volume Measurements
+``` {r ANOVA for agar volume, pre-filter}
+# one-way ANOVA
+model_agar_volume_1 <- aov(tof ~ treatment, data = all_agar_volume)
+summary(model_agar_volume_1)
+
+# check variances
+leveneTest(tof ~ treatment, data = all_agar_volume)
+
+#QQ plots
+res <- residuals(model_agar_volume_1)
+qqnorm(res)
+qqline(res)
+
+# Welch's ANOVA
+model_agar_volume_2 <- oneway.test(tof ~ treatment, data = all_agar_volume, var.equal = FALSE)
+model_agar_volume_2
+
+# Games-Howell
+all_agar_volume_clean <- all_agar_volume %>%
+  mutate(treatment = factor(treatment),
+         tof = as.numeric(tof))
+
+agar_volume_gh_pre <- all_agar_volume_clean %>%
+  games_howell_test(tof ~ treatment)
+agar_volume_gh_pre
+```
+
+``` {r pre-filter plotting}
+# pre-filter CLD
+agar_volume_gh_pre <- all_agar_volume_clean %>%
+  games_howell_test(tof ~ treatment)
+
+p_vec_pre <- setNames(
+  ifelse(agar_volume_gh_pre$p.adj < 0.001, 0.0001, agar_volume_gh_pre$p.adj),
+  paste(agar_volume_gh_pre$group1, agar_volume_gh_pre$group2, sep = "-")
+)
+
+cld_agar_pre <- multcompLetters(p_vec_pre)$Letters
+cld_agar_pre
+
+cld_agar_pre <- data.frame(
+  treatment = names(cld_agar_pre),
+  letter = cld_agar_pre
+)
+
+agar_pre_summary <- all_agar_volume %>%
+  group_by(treatment) %>%
+  summarise(
+    mean = mean(tof, na.rm = TRUE),
+    se = sd(tof, na.rm = TRUE) / sqrt(n()),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(error_bar_top = mean + se) %>%
+  left_join(cld_agar_pre, by = "treatment") %>%
+  mutate(label_y = case_when(
+    treatment == "3 mL agar" ~ 966,
+    treatment == "4 mL agar" ~ 1189,
+    treatment == "5 mL agar" ~ 1069,
+    treatment == "6 mL agar" ~ 1129,
+    treatment == "7 mL agar" ~ 712,
+    treatment == "8 mL agar" ~ 817
+  ))
+
+# pre-filter plot
+ggplot(all_agar_volume, aes(x = treatment, y = tof)) +
+  stat_summary(fun = mean, geom = "col", fill = "steelblue", color = "black", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, color = "black", linewidth = 0.7) +
+  geom_text(data = agar_pre_summary, aes(x = treatment, y = label_y, label = letter),
+            size = 4, inherit.aes = FALSE) +
+  labs(
+    title = "C. elegans Time of Flight by Agar Volume (Pre-Filter)",
+    x = "Agar Volume",
+    y = "Time of Flight (TOF)"
+  ) +
+  coord_cartesian(ylim = c(0, 2000)) +
+  scale_y_continuous(breaks = seq(0, 2000, by = 250),
+                     expand = expansion(mult = c(0, 0))) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave("Plots/agar_volume_pre_filter.jpeg", dpi = 300, width = 6, height = 5, units = "in")
+```
+
+``` {r ANOVA for agar volume, post-filter}
+# one-way ANOVA
+model_agar_volume_3 <- aov(tof ~ treatment, data = post_filter_combo_all_agar_volume)
+summary(model_agar_volume_3)
+
+# check variances
+leveneTest(tof ~ treatment, data = post_filter_combo_all_agar_volume)
+
+#QQ plots
+res <- residuals(model_agar_volume_3)
+qqnorm(res)
+qqline(res)
+
+# Welch's ANOVA
+model_agar_volume_4 <- oneway.test(tof ~ treatment, data = post_filter_combo_all_agar_volume, var.equal = FALSE)
+model_agar_volume_4
+
+# Games-Howell
+post_filter_combo_all_agar_volume_clean <- post_filter_combo_all_agar_volume %>%
+  mutate(treatment = factor(treatment),
+         tof = as.numeric(tof))
+
+agar_volume_gh_post <- post_filter_combo_all_agar_volume_clean %>%
+  games_howell_test(tof ~ treatment)
+agar_volume_gh_post
+```
+
+``` {r post-filter plotting}
+# post-filter CLD
+agar_volume_gh_post <- post_filter_combo_all_agar_volume_clean %>%
+  games_howell_test(tof ~ treatment)
+
+p_vec_post <- setNames(
+  ifelse(agar_volume_gh_post$p.adj < 0.001, 0.0001, agar_volume_gh_post$p.adj),
+  paste(agar_volume_gh_post$group1, agar_volume_gh_post$group2, sep = "-")
+)
+
+cld_agar_post <- multcompLetters(p_vec_post)$Letters
+cld_agar_post
+
+cld_agar_post <- data.frame(
+  treatment = names(cld_agar_post),
+  letter = cld_agar_post
+)
+
+agar_post_summary <- post_filter_combo_all_agar_volume %>%
+  group_by(treatment) %>%
+  summarise(
+    mean = mean(tof, na.rm = TRUE),
+    se = sd(tof, na.rm = TRUE) / sqrt(n()),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  left_join(cld_agar_post, by = "treatment") %>%
+  mutate(error_bar_top = mean + se) %>%
+  mutate(label_y = case_when(
+    treatment == "3 mL agar" ~ 1580,
+    treatment == "4 mL agar" ~ 1747,
+    treatment == "5 mL agar" ~ 1428,
+    treatment == "6 mL agar" ~ 1785,
+    treatment == "7 mL agar" ~ 1163,
+    treatment == "8 mL agar" ~ 1386
+  ))
+
+# post-filter plot
+ggplot(post_filter_combo_all_agar_volume, aes(x = treatment, y = tof)) +
+  stat_summary(fun = mean, geom = "col", fill = "steelblue", color = "black", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, color = "black", linewidth = 0.7) +
+  geom_text(data = agar_post_summary, aes(x = treatment, y = label_y, label = letter),
+            size = 4, inherit.aes = FALSE) +
+  labs(
+    title = "C. elegans Time of Flight by Agar Volume (Post-Filter)",
+    x = "Agar Volume",
+    y = "Time of Flight (TOF)"
+  ) +
+  coord_cartesian(ylim = c(0, 2000)) +
+  scale_y_continuous(breaks = seq(0, 2000, by = 250),
+                     expand = expansion(mult = c(0, 0))) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black")
+  )
+
+ggsave("Plots/agar_volume_post_filter.jpeg", dpi = 300, width = 6, height = 5, units = "in")
+```
+
+#Normalizing the Data post-filtering and Descriptive Stats
+``` {r normalizing the data post-filtering}
+# normalization
+post_filter_combo_all_6_well_norm <- post_filter_combo_all_6_well %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+post_filter_combo_all_agar_volume_norm <- post_filter_combo_all_agar_volume %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[treatment == "3 mL agar"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+post_filter_combo_all_liquid_culture_norm <- post_filter_combo_all_liquid_culture %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+
+post_filter_combo_all_6cm_norm <- post_filter_combo_all_6cm %>%
+  group_by(experiment) %>%
+  mutate(control_mean = mean(tof[dose == "M9"], na.rm = TRUE)) %>%
+  mutate(percent_control = (tof / control_mean) * 100) %>%
+  ungroup()
+```
+
+``` {r descriptive stats for each expt + compiled experiments - with filtering}
+# descriptive stats per experiment
+stats_6well_post_filter_per_expt <- desc_stats(post_filter_combo_all_6_well_norm, dose)
+stats_agar_volume_post_filter_per_expt <- desc_stats(post_filter_combo_all_agar_volume_norm, treatment)
+stats_liquid_culture_post_filter_per_expt <- desc_stats(post_filter_combo_all_liquid_culture_norm, dose)
+stats_6cm_post_filter_per_expt <- desc_stats(post_filter_combo_all_6cm_norm, dose)
+
+# descriptive stats combined
+stats_6well_post_filter_combined <- desc_stats_combined(post_filter_combo_all_6_well_norm, dose)
+stats_agar_volume_post_filter_combined <- desc_stats_combined(post_filter_combo_all_agar_volume_norm, treatment)
+stats_liquid_culture_post_filter_combined <- desc_stats_combined(post_filter_combo_all_liquid_culture_norm, dose)
+stats_6cm_post_filter_combined <- desc_stats_combined(post_filter_combo_all_6cm_norm, dose)
+```
+
+#Comparison of Coefficient of Variations Before and After Filtering
+``` {r comparison of before and after filtering}
+cv_summary <- function(pre_df, post_df, group_var) {
+  pre <- pre_df %>%
+    group_by({{ group_var }}) %>%
+    summarise(
+      cv_pre = sd(percent_control, na.rm = TRUE) / mean(percent_control, na.rm = TRUE) * 100,
+      n_pre = n(),
+      .groups = "drop")
+  
+  post <- post_df %>%
+    group_by({{ group_var }}) %>%
+    summarise(
+      cv_post = sd(percent_control, na.rm = TRUE) / mean(percent_control, na.rm = TRUE) * 100,
+      n_post = n(),
+      .groups = "drop")
+  
+  left_join(pre, post, by = join_by({{ group_var }})) %>%
+    mutate(difference = cv_post - cv_pre)
+}
+
+compare_cv_6well          <- cv_summary(all_6_well_norm, post_filter_combo_all_6_well_norm, dose)
+compare_cv_agar_volume    <- cv_summary(all_agar_volume_norm, post_filter_combo_all_agar_volume_norm, treatment)
+compare_cv_liquid_culture <- cv_summary(all_liquid_culture_norm, post_filter_combo_all_liquid_culture_norm, dose)
+compare_cv_6cm            <- cv_summary(all_6cm_norm, post_filter_combo_all_6cm_norm, dose)
+
+cv_table <- bind_rows(
+  compare_cv_6well %>% mutate(medium = "6 Well", group = as.character(dose)),
+  compare_cv_agar_volume %>% mutate(medium = "Agar Volume", group = as.character(treatment)),
+  compare_cv_liquid_culture %>% mutate(medium = "Liquid Culture", group = as.character(dose)),
+  compare_cv_6cm %>% mutate(medium = "6 cm Plate", group = as.character(dose))
+) %>%
+  dplyr::select(medium, group, n_pre, n_post, cv_pre, cv_post, difference) %>%
+  mutate(
+    cv_pre = round(cv_pre, 2),
+    cv_post = round(cv_post, 2),
+    difference = round(difference, 2)
+  ) %>%
+  rename(
+    "Dosing Medium" = medium,
+    "Dose/Treatment" = group,
+    "N Pre-Filtering" = n_pre,
+    "N Post-Filtering" = n_post,
+    "CV Pre-Filtering (%)" = cv_pre,
+    "CV Post-Filtering (%)" = cv_post,
+    "Difference (%)" = difference
+  )
+
+knitr::kable(cv_table)
+```
+
+#Comparison of Differing Dosing Mediums
+``` {r combining datasets for dosing mediums}
+comparison_data <- bind_rows(
+  post_filter_combo_all_6_well_norm %>% 
+    mutate(medium = "6 well") %>%
+    filter(dose %in% c("100 mM", "10 mM", "1 mM", "M9")),
+  post_filter_combo_all_liquid_culture_norm %>% 
+    mutate(medium = "liquid culture") %>%
+    filter(dose %in% c("100 mM", "10 mM", "1 mM", "M9")),
+  post_filter_combo_all_6cm_norm %>% 
+    mutate(medium = "6 cm") %>%
+    filter(dose %in% c("100 mM", "10 mM", "1 mM", "M9"))
+) %>%
+  mutate(
+    medium = factor(medium, levels = c("6 cm", "6 well", "liquid culture")),
+    dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "M9")),
+    id = row_number()
+  )
+
+comparison_data %>%
+  group_by(medium, dose) %>%
+  summarise(
+    count = n(),
+    mean = mean(percent_control, na.rm = TRUE),
+    sd = sd(percent_control, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+``` {r two-way ANOVA for dosing mediums}
+# two-way ANOVA
+model_1 <- aov(percent_control ~ dose * medium, data = comparison_data)
+summary(model_1)
+
+res <- residuals(model_1)
+qqnorm(res)
+qqline(res)
+#Residuals look pretty good actually
+
+leveneTest(percent_control ~ interaction(dose, medium), data = comparison_data)
+#Significant for Levene's test
+```
+
+``` {r robust two-way ANOVA for dosing mediums}
+library(afex)
+model_robust_1 <- aov_ez(id = "id",
+                         dv = "percent_control",
+                         data = comparison_data,
+                         between = c("dose", "medium"),
+                         white.adjust = TRUE)
+summary(model_robust_1)
+
+games_howell_by_dose <- comparison_data %>%
+  mutate(dose = droplevels(factor(dose))) %>%
+  group_by(dose) %>%
+  games_howell_test(percent_control ~ medium) %>%
+  ungroup() %>%
+  mutate(
+    estimate = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.adj = case_when(
+      p.adj < 0.001 ~ "< 0.001",
+      TRUE ~ as.character(round(p.adj, 4))
+    )
+  ) %>%
+  dplyr::select(dose, group1, group2, estimate, conf.low, conf.high, p.adj)
+
+games_howell_by_dose
+```
+
+``` {r dosing medium plotting}
+medium_summary <- comparison_data %>%
+  group_by(medium, dose) %>%
+  summarise(
+    mean = mean(percent_control, na.rm = TRUE),
+    se = sd(percent_control, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(bar_top = mean + se)
+
+knitr::kable(medium_summary)
+
+# brackets for each significant comparison
+comparisons <- data.frame(
+  dose = factor(c("100 mM", "100 mM", "100 mM",
+                  "10 mM", "10 mM",
+                  "1 mM"),
+                levels = levels(comparison_data$dose)),
+  x = c(1, 1, 2,    # 6cm-6well, 6cm-lc, 6well-lc
+         1, 2,       # 6cm-lc, 6well-lc
+         1),         # 6cm-6well
+  xend = c(2, 3, 3,
+            3, 3,
+            2),
+  y = c(53, 97, 87,  # 100 mM bracket heights
+         126, 116,       # 10 mM bracket heights
+         127),          # 1 mM bracket height
+  label = c("**", "***", "***",
+             "***", "***",
+             "**"),
+  label_y = c(55, 99, 89,
+               128, 118,
+               129)
+)
+
+comparison_data_cleaned <- comparison_data %>%
+  filter(dose %in% c("100 mM", "10 mM", "1 mM"))
+
+ggplot(comparison_data_cleaned, aes(x = medium, y = percent_control)) +
+  stat_summary(fun = mean, geom = "col", fill = "steelblue", color = "black", width = 0.4) +
+  stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.15, color = "black", linewidth = 0.7) +
+  facet_wrap(~ dose, nrow = 1, scales = "free_x") +
+  labs(
+    title = "Percent Control of C. elegans Time of Flight by Dosing Medium",
+    x = "Dosing Medium",
+    y = "Percent Control of Time of Flight (TOF)"
+  ) +
+  scale_y_continuous(
+  breaks = seq(0, 125, by = 25),
+  expand = expansion(mult = c(0, 0))
+) +
+coord_cartesian(ylim = c(0, 140)) +
+  geom_segment(data = comparisons, aes(x = x, xend = xend, y = y, yend = y), inherit.aes = FALSE) +
+geom_segment(data = comparisons, aes(x = x, xend = x, y = y, yend = y - 2), inherit.aes = FALSE) +
+geom_segment(data = comparisons, aes(x = xend, xend = xend, y = y, yend = y - 2), inherit.aes = FALSE) +
+geom_text(data = comparisons, aes(x = (x + xend) / 2, y = label_y, label = label), 
+          size = 4, inherit.aes = FALSE) +
+  scale_x_discrete(labels = c("6 cm" = "6 cm Plate", 
+                             "6 well" = "6-Well Plate", 
+                             "liquid culture" = "Liquid Culture")) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.title = element_text(face = "bold"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    axis.ticks = element_line(color = "black"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave("Plots/dosing_medium_comparison_plot.jpeg", dpi = 300, width = 10, height = 6, units = "in")
+```
+
