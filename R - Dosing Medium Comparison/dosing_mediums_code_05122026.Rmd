@@ -20,7 +20,7 @@ library(multcompView)
 library(DescTools)
 ```
 
-#Reading in the Data
+# Reading in the Data
 ```{r reading in data and cleaning it}
 #expt from 8/29
 expt_1_6well <- read.delim("COPAS Data/8_29_24/tca_worms_final_2_1.txt", header = TRUE, stringsAsFactors = FALSE) %>%
@@ -200,7 +200,7 @@ all_6cm <- bind_rows(
   mutate(dose = factor(dose, levels = c("100 mM", "10 mM", "1 mM", "100 uM", "M9", "BLANK")))
 ```
 
-#Normalizing the Data pre-filtering and Descriptive Stats
+# Normalizing the Data pre-filtering and Descriptive Stats
 ``` {r normalization to the control within each experiment}
 # all_6_well
 all_6_well_norm <- all_6_well %>%
@@ -276,7 +276,7 @@ stats_liquid_culture_combined <- desc_stats_combined(all_liquid_culture_norm, do
 stats_6cm_combined            <- desc_stats_combined(all_6cm_norm, dose)
 ```
 
-#Filtering the Data
+# Filtering the Data
 ``` {r pca and kmeans clustering}
 library(FactoMineR)
 library(factoextra)
@@ -556,7 +556,7 @@ ggsave("Plots/post_filter_ext_vs_tof/plot9_expt_1_agar_volume.jpeg", plot = plot
 ggsave("Plots/post_filter_ext_vs_tof/plot10_expt_2_agar_volume.jpeg", plot = plot10, dpi = 300, width = 10, height = 8, units = "in")
 ```
 
-#Agar Volume Measurements
+# Agar Volume Measurements
 ``` {r ANOVA for agar volume, pre-filter}
 # one-way ANOVA
 model_agar_volume_1 <- aov(tof ~ treatment, data = all_agar_volume)
@@ -745,7 +745,7 @@ ggplot(post_filter_combo_all_agar_volume, aes(x = treatment, y = tof)) +
 ggsave("Plots/agar_volume_post_filter.jpeg", dpi = 300, width = 6, height = 5, units = "in")
 ```
 
-#Normalizing the Data post-filtering and Descriptive Stats
+# Normalizing the Data post-filtering and Descriptive Stats
 ``` {r normalizing the data post-filtering}
 # normalization
 post_filter_combo_all_6_well_norm <- post_filter_combo_all_6_well %>%
@@ -787,7 +787,7 @@ stats_liquid_culture_post_filter_combined <- desc_stats_combined(post_filter_com
 stats_6cm_post_filter_combined <- desc_stats_combined(post_filter_combo_all_6cm_norm, dose)
 ```
 
-#Comparison of Coefficient of Variations Before and After Filtering
+# Comparison of Coefficient of Variations Before and After Filtering
 ``` {r comparison of before and after filtering}
 cv_summary <- function(pre_df, post_df, group_var) {
   pre <- pre_df %>%
@@ -838,7 +838,7 @@ cv_table <- bind_rows(
 knitr::kable(cv_table)
 ```
 
-#Comparison of Differing Dosing Mediums
+# Comparison of Differing Dosing Mediums
 ``` {r combining datasets for dosing mediums}
 comparison_data <- bind_rows(
   post_filter_combo_all_6_well_norm %>% 
