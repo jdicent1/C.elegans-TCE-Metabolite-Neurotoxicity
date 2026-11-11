@@ -16,7 +16,7 @@ library(writexl)
 library(multcompView)
 ```
 
-#Reading in QC and Raw Data
+# Reading in QC and Raw Data
 ``` {r import, clean, and check the QC}
 # Function to read and clean one QC file
 read_qc_file <- function(path) {
@@ -354,7 +354,7 @@ data_ua44_5 <- read_csv("/Volumes/LaCie/Neuron Analysis - 60x/Dendrite Results F
   select(expt, id, strain, day, treatment, den_1, den_2)
 ```
 
-#Cleaning the Raw Data and Data Exploration
+# Cleaning the Raw Data and Data Exploration
 ``` {r combined data}
 all_data <- bind_rows(data_bz555_1, data_bz555_3, data_bz555_5,
                       data_ua44_1, data_ua44_3, data_ua44_5)
@@ -398,7 +398,7 @@ summary <- all_data_long %>%
   summarise(count = n())
 ```
 
-#Chi Square Test
+# Chi Square Test
 ``` {r Chi Square test for treatment}
 #Using Chi Square since this is the typical test used in the field for dendrite analysis. Running only the pairwise tests that make the most sense biologically.
 
@@ -814,7 +814,7 @@ tceoh_pairwise_results_cs
 tceoh_letters_cs
 ```
 
-#Cumulative Link Mixed Models
+# Cumulative Link Mixed Models
 ``` {r stats - CLMM}
 #Answers a different question, though CLMM analysis isn't common in the field for C. elegans dendrite analysis. Models how the odds of being at a higher score will change with strain/treatment/day
 options(scipen = 999)
@@ -1169,7 +1169,7 @@ tca_day_table
 tceoh_day_table
 ```
 
-#Data Visualization and Export
+# Data Visualization and Export
 ``` {r plotting}
 plot_data_tca <- all_data_long %>%
   filter(treatment %in% c("Ctrl", "TCA")) %>%

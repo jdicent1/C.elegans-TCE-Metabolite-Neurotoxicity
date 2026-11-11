@@ -357,7 +357,8 @@ display: none;
 </div>
 
 
-<p>#Reading in QC and Raw Data</p>
+<div id="reading-in-qc-and-raw-data" class="section level1">
+<h1>Reading in QC and Raw Data</h1>
 <pre class="r"><code># Function to read and clean one QC file
 read_qc_file &lt;- function(path) {
   read_csv(path, skip = 1, col_names = TRUE, show_col_types = FALSE) %&gt;%
@@ -763,7 +764,9 @@ qc_summary</code></pre>
 ## Specify the column types or set `show_col_types = FALSE` to quiet this message.
 ## • `0` -&gt; `0...2`
 ## • `0` -&gt; `0...3`</code></pre>
-<p>#Cleaning the Raw Data and Data Exploration</p>
+</div>
+<div id="cleaning-the-raw-data-and-data-exploration" class="section level1">
+<h1>Cleaning the Raw Data and Data Exploration</h1>
 <pre class="r"><code>all_data &lt;- bind_rows(data_bz555_1, data_bz555_3, data_bz555_5,
                       data_ua44_1, data_ua44_3, data_ua44_5)
 
@@ -800,7 +803,9 @@ tceoh_data &lt;- all_data_long %&gt;%
   summarise(count = n())</code></pre>
 <pre><code>## `summarise()` has grouped output by &#39;day&#39;, &#39;treatment&#39;. You can override using
 ## the `.groups` argument.</code></pre>
-<p>#Chi Square Test</p>
+</div>
+<div id="chi-square-test" class="section level1">
+<h1>Chi Square Test</h1>
 <pre class="r"><code>#Using Chi Square since this is the typical test used in the field for dendrite analysis. Running only the pairwise tests that make the most sense biologically.
 
 #Helper function to run one pairwise chi-square test
@@ -1272,7 +1277,9 @@ tca_pairwise_results_cs</code></pre>
 ##  9 Day 5 Day within Strain x Treatment UA44   Solvent Control b      
 ## 10 Day 1 Day within Strain x Treatment UA44   5 mM TCEOH      ab     
 ## # ℹ 26 more rows</code></pre>
-<p>#Cumulative Link Mixed Models</p>
+</div>
+<div id="cumulative-link-mixed-models" class="section level1">
+<h1>Cumulative Link Mixed Models</h1>
 <pre class="r"><code>#Answers a different question, though CLMM analysis isn&#39;t common in the field for C. elegans dendrite analysis. Models how the odds of being at a higher score will change with strain/treatment/day
 options(scipen = 999)
 
@@ -1784,7 +1791,9 @@ tca_day_table</code></pre>
 ## 10 day1 - day3     0.5722  1.0987           0.5149
 ## 11 day1 - day5    -1.4455 -2.7967           0.0143
 ## 12 day3 - day5    -2.0177 -3.7867           0.0004</code></pre>
-<p>#Data Visualization and Export</p>
+</div>
+<div id="data-visualization-and-export" class="section level1">
+<h1>Data Visualization and Export</h1>
 <pre class="r"><code>plot_data_tca &lt;- all_data_long %&gt;%
   filter(treatment %in% c(&quot;Ctrl&quot;, &quot;TCA&quot;)) %&gt;%
   filter(score %in% c(0, 1, 2, 3, 4)) %&gt;%
@@ -2044,6 +2053,7 @@ write_xlsx(
     ),
   path = &quot;chi_square_pairwise_results.xlsx&quot;
 )</code></pre>
+</div>
 
 
 
