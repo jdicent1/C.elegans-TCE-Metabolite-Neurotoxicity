@@ -17,7 +17,7 @@ library(writexl)
 library(broom)
 ```
 
-#Reading in the files
+# Reading in the files
 ``` {r reading in the data, cache = TRUE}
 main_dir <- "ARS Videos for Worm Lab/"
 
@@ -668,7 +668,7 @@ omega_tceoh_day5 <- omega_tceoh %>%
   filter(day == "Day 5")
 ```
 
-#Day 5 Prep
+# Day 5 Prep
 ``` {r use day 5 data only}
 # Overwrite base variables with Day 5 subsets for all downstream analysis
 track_tca     <- track_tca_day5
@@ -684,7 +684,7 @@ dir.create("Day 5", showWarnings = FALSE)
 ```
 
 
-#Raw Data Analysis
+# Raw Data Analysis
 ##Track Metrics and Stats
 ``` {r filtering track metrics - tca}
 track_metrics_tca <- track_tca %>%
@@ -2344,7 +2344,7 @@ write_xlsx(
 ```
 
 
-#Normalizing Data and Analysis
+# Normalizing Data and Analysis
 ``` {r track metrics normalized}
 #Average 5 min timepoint, then divide individual 5 min and 30 min values by average
 track_metrics_tca_norm <- track_metrics_tca %>%
