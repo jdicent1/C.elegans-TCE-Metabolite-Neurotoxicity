@@ -18,7 +18,7 @@ library(DescTools)
 library(rstatix)
 ```
 
-#Reading in the Data
+# Reading in the Data
 ``` {r reading in all files}
 all_files <- list.files(
   "Image Data/",
@@ -82,7 +82,7 @@ all_tcaa_data <- all_data %>%
 
 ```
 
-#Initial Visualization
+# Initial Visualization
 ``` {r initial viz - M9 expt}
 ggplot(all_m9_data, aes(x = factor(ph), y = length)) +
   stat_summary(fun = mean, geom = "col", fill = "skyblue", color = "black", width = 0.7) +
@@ -115,7 +115,7 @@ ggplot(all_tcaa_data, aes(x = factor(dose), y = length)) +
   )
 ```
 
-#ANOVA
+# ANOVA
 ``` {r running the Anova - M9}
 
 model <- aov(length ~ ph, data = all_m9_data)
@@ -141,7 +141,7 @@ qqnorm(res)
 qqline(res)
 ```
 
-#Normalization of the Data
+# Normalization of the Data
 ``` {r normalizing to the normal M9 dose - M9}
 all_m9_data_outlier_filtered <- all_m9_data %>%
   group_by(ph, experiment) %>%
@@ -188,7 +188,7 @@ all_tcaa_data_norm <- all_tcaa_data_outlier_filtered %>%
   dplyr::select(-control_mean)
 ```
 
-#ANOVA Using Normalized Data
+# ANOVA Using Normalized Data
 ``` {r running the ANOVA - M9}
 model_2 <- aov(percent_control ~ ph, data = all_m9_data_norm)
 summary(model_2)
@@ -278,7 +278,7 @@ games_howell_tcaa <- all_tcaa_data_norm %>%
 games_howell_tcaa
 ```
 
-#Visualizing the Normalized Data
+# Visualizing the Normalized Data
 ``` {r normalized viz - M9 Expt}
 cld_df <- data.frame(
   ph = factor(c("7.1", "5.35", "5.5", "6", "6.5", "7"),
