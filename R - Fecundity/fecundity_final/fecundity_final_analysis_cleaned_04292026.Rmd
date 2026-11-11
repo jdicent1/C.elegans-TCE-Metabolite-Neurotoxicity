@@ -17,7 +17,7 @@ library(emmeans)
 library(writexl)
 ```
 
-#Reading in the Data
+# Reading in the Data
 ``` {r reading in the data and cleaning names}
 raw_data_all_expts <- read_xlsx("Compiled Data - 1_5_2026.xlsx")
 
@@ -57,7 +57,7 @@ tceoh_raw_data <- long_data %>%
          strain = relevel(strain, ref = "N2"))
 ```
 
-#Three Way ANOVAs - Raw Data
+# Three Way ANOVAs - Raw Data
 ``` {r running a three-way ANOVA - raw data normalized - TCA}
 #Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
 tca_raw_model <- aov(eggs ~ day * dose * strain, data = tca_raw_data)
@@ -130,7 +130,7 @@ tca_raw_table <- summary(tca_raw_model)
 tceoh_raw_table <- summary(tceoh_raw_model)
 ```
 
-#Plotting - Raw Data
+# Plotting - Raw Data
 ``` {r plotting data}
 library(ggplot2)
 library(dplyr)
@@ -170,7 +170,7 @@ ggplot(plot_raw_data, aes(x = day, y = mean_eggs, color = dose, group = dose)) +
   )
 ```
 
-#Normalizing within Controls
+# Normalizing within Controls
 ``` {r normalizing within control}
 normalized_by_control <- long_data %>%
   group_by(experiment, strain, day) %>%
@@ -205,7 +205,7 @@ tceoh_normalized_data <- normalized_by_control %>%
          strain = relevel(strain, ref = "N2"))
 ```
 
-#Three Way ANOVAs - Normalized Data
+# Three Way ANOVAs - Normalized Data
 ``` {r running a three-way ANOVA - normalized by control data - TCA}
 #Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
 tca_model <- aov(percent_control ~ day * dose * strain, data = tca_normalized_data)
@@ -280,7 +280,7 @@ tca_table <- summary(tca_model)
 tceoh_table <- summary(tceoh_model)
 ```
 
-#Investigating TCEOH Model - Normalized Data
+# Investigating TCEOH Model - Normalized Data
 ``` {r estimated marginal means}
 library(emmeans)
 emmeans(tceoh_model, pairwise ~ day | strain * dose, adjust = "none") 
@@ -338,7 +338,7 @@ leveneTest(percent_control ~ day * strain,
 #If I'm using estimated marginal means, not necessary to do two-way ANOVA but good to still check.
 ```
 
-#Plotting - Normalized
+# Plotting - Normalized
 ``` {r plotting the data}
 library(ggplot2)
 library(dplyr)
@@ -421,7 +421,7 @@ ggplot(plot_norm_data_tceoh, aes(x = day, y = mean_pct_ctrl, color = dose, group
 dev.off()
 ```
 
-#Export Stats
+# Export Stats
 ``` {r exporting all relevant stats}
 library(writexl)
 
