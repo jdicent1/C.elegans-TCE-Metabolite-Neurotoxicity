@@ -1,0 +1,468 @@
+---
+title: "Fecundity Final Analysis"
+author: "Jocelyn Dicent"
+date: "2026-04-29"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(multcomp)
+library(onewaytests)
+library(car) 
+library(emmeans)
+library(writexl)
+```
+
+# Reading in the Data
+``` {r reading in the data and cleaning names}
+raw_data_all_expts <- read_xlsx("Compiled Data - 1_5_2026.xlsx")
+
+cleaned_data <- raw_data_all_expts %>%
+  clean_names() %>%
+  mutate(dose = factor(dose, levels = c("Vehicle Control", "10 mM TCA", "Solvent Control", "5 mM TCEOH")),
+         strain = factor(strain, levels = c("N2", "BZ555", "UA44")),
+         experiment = factor(experiment),
+         day = factor(day)
+         )
+
+long_data <- cleaned_data %>%
+  pivot_longer(
+    cols = starts_with("rep"),
+    names_to = "replicate",
+    values_to = "eggs"
+  )
+
+egg_counts <- long_data %>%
+  group_by(strain, dose, day, eggs) %>%
+  summarise(n_worms = n(), .groups = "drop")
+```
+
+``` {r split by control / treatment type - raw data}
+tca_raw_data <- long_data %>%
+  filter(dose %in% c("Vehicle Control", "10 mM TCA")) %>%
+  mutate(worm_id = paste(experiment, strain, dose, day, replicate, sep = "_"),
+         dose = relevel(dose, ref = "Vehicle Control"),
+         day = relevel(day, ref = "1"),
+         strain = relevel(strain, ref = "N2"))
+
+tceoh_raw_data <- long_data %>%
+  filter(dose %in% c("Solvent Control", "5 mM TCEOH")) %>%
+  mutate(worm_id = paste(experiment, strain, dose, day, replicate, sep = "_"),
+         dose = relevel(dose, ref = "Solvent Control"),
+         day = relevel(day, ref = "1"),
+         strain = relevel(strain, ref = "N2"))
+```
+
+# Three Way ANOVAs - Raw Data
+``` {r running a three-way ANOVA - raw data normalized - TCA}
+#Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
+tca_raw_model <- aov(eggs ~ day * dose * strain, data = tca_raw_data)
+
+summary(tca_raw_model)
+#Strain difference
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(tca_raw_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here.
+leveneTest(eggs ~ day * dose * strain, 
+           data = tca_raw_data,
+           center = median)
+```
+
+``` {r running a three-way ANOVA - raw data normalized - TCEOH}
+#Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
+tceoh_raw_model <- aov(eggs ~ day * dose * strain, data = tceoh_raw_data)
+
+summary(tceoh_raw_model)
+#day, dose, strain, day:dose, dose:strain are all significant
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(tceoh_raw_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here.
+leveneTest(eggs ~ day * dose * strain, 
+           data = tceoh_raw_data,
+           center = median)
+```
+
+``` {r running a robust ANOVA - raw data, eval = FALSE}
+library(afex)
+#Using this package's ANOVA to see if applying a heteroskedascity correction changes things a lot.
+
+tca_raw_robust <- aov_ez(
+  id = "worm_id",   # whatever identifies worms
+  dv = "eggs",
+  between = c("day", "dose", "strain"),
+  data = tca_raw_data,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(tca_raw_robust)
+#p-values do not change between the two models, still the same
+
+tceoh_raw_robust <- aov_ez(
+  id = "worm_id",   # whatever identifies worms
+  dv = "eggs",
+  between = c("day", "dose", "strain"),
+  data = tceoh_raw_data,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(tceoh_raw_robust)
+#Same exact p-values as the first model, no change in the results
+```
+
+``` {r summary tables - raw data}
+tca_raw_table <- summary(tca_raw_model)
+tceoh_raw_table <- summary(tceoh_raw_model)
+```
+
+# Plotting - Raw Data
+``` {r plotting data}
+library(ggplot2)
+library(dplyr)
+
+# Summarize normalized data for plotting
+plot_raw_data <- long_data %>%
+  group_by(strain, day, dose) %>%
+  summarise(
+    mean_eggs = mean(eggs, na.rm = TRUE),
+    sd_eggs = sd(eggs, na.rm = TRUE),
+    n = n(),
+    se_eggs = sd_eggs / sqrt(n)
+  ) %>%
+  ungroup()
+```
+
+``` {r line plot for trends over days option 2}
+# Line Plot - trends across days per dose and per strain
+ggplot(plot_raw_data, aes(x = day, y = mean_eggs, color = dose, group = dose)) +
+  geom_point(size = 3.5, position = position_dodge(width = 0.35), shape = 16) +
+  geom_line(position = position_dodge(width = 0.35), size = 1) +
+  geom_errorbar(aes(ymin = mean_eggs - se_eggs, ymax = mean_eggs + se_eggs),
+                width = 0.2, position = position_dodge(width = 0.35), size = 0.8) +
+  facet_wrap( ~ strain) +
+  labs(title = "Trends of Normalized Eggs in Utero Across Days", x = "Day", y = "Percent Control of Eggs in Utero", color = "Dose") +
+  scale_color_brewer(palette = "Dark2") +   # Prism-like color palette
+  scale_x_discrete(breaks = c(1, 2)) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major = element_line(color = "grey90"), # light grid lines
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(color = "black", size = 0.8),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+# Normalizing within Controls
+``` {r normalizing within control}
+normalized_by_control <- long_data %>%
+  group_by(experiment, strain, day) %>%
+  mutate(
+    vehicle_mean = mean(eggs[dose == "Vehicle Control"], na.rm = TRUE),
+    solvent_mean = mean(eggs[dose == "Solvent Control"], na.rm = TRUE),
+
+    control_mean = case_when(
+      dose %in% c("Vehicle Control", "10 mM TCA") ~ vehicle_mean,
+      dose %in% c("Solvent Control", "5 mM TCEOH") ~ solvent_mean,
+      TRUE ~ NA_real_
+    ),
+
+    percent_control = (eggs / control_mean) * 100
+  ) %>%
+  ungroup()
+```
+
+``` {r split by control / treatment type - normalized data}
+tca_normalized_data <- normalized_by_control %>%
+  filter(dose %in% c("Vehicle Control", "10 mM TCA")) %>%
+  mutate(worm_id = paste(experiment, strain, dose, day, replicate, sep = "_"),
+         dose = relevel(dose, ref = "Vehicle Control"),
+         day = relevel(day, ref = "1"),
+         strain = relevel(strain, ref = "N2"))
+
+tceoh_normalized_data <- normalized_by_control %>%
+  filter(dose %in% c("Solvent Control", "5 mM TCEOH")) %>%
+  mutate(worm_id = paste(experiment, strain, dose, day, replicate, sep = "_"),
+         dose = relevel(dose, ref = "Solvent Control"),
+         day = relevel(day, ref = "1"),
+         strain = relevel(strain, ref = "N2"))
+```
+
+# Three Way ANOVAs - Normalized Data
+``` {r running a three-way ANOVA - normalized by control data - TCA}
+#Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
+tca_model <- aov(percent_control ~ day * dose * strain, data = tca_normalized_data)
+
+summary(tca_model)
+#Nothing is significant
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(tca_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here. Probably significant bcause I percent control everything so the variance for the control is tighter.
+leveneTest(percent_control ~ day * dose * strain, 
+           data = tca_normalized_data,
+           center = median)
+```
+
+``` {r running a three-way ANOVA - normalized by control data - TCEOH}
+#Running an ANOVA with all of the compounds being normalized to their respective controls (vehicle or solvent control)
+tceoh_model <- aov(percent_control ~ day * dose * strain, data = tceoh_normalized_data)
+
+summary(tceoh_model)
+#All factors are significant
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(tceoh_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here. Probably significant bcause I percent control everything so the variance for the control is tighter.
+leveneTest(percent_control ~ day * dose * strain, 
+           data = tceoh_normalized_data,
+           center = median)
+```
+
+``` {r running a robust ANOVA - normalized data, eval = FALSE}
+library(afex)
+#Using this package's ANOVA to see if applying a heteroskedascity correction changes things a lot.
+
+tca_model_robust <- aov_ez(
+  id = "worm_id",   # whatever identifies worms
+  dv = "percent_control",
+  between = c("day", "dose", "strain"),
+  data = tca_normalized_data,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(tceoh_model_robust)
+#Nothing is significant still. p-values do not change between the two models.
+
+tceoh_model_robust <- aov_ez(
+  id = "worm_id",   # whatever identifies worms
+  dv = "percent_control",
+  between = c("day", "dose", "strain"),
+  data = tceoh_normalized_data,
+  type = 3,
+  white.adjust = TRUE
+)
+
+summary(tceoh_model_robust)
+#Everything is significant, same exact p-values as the first model.
+
+#Since nothing changes, I will use the simpler ANOVA model.
+```
+
+``` {r summary tables - normalized data}
+tca_table <- summary(tca_model)
+tceoh_table <- summary(tceoh_model)
+```
+
+# Investigating TCEOH Model - Normalized Data
+``` {r estimated marginal means}
+library(emmeans)
+emmeans(tceoh_model, pairwise ~ day | strain * dose, adjust = "none") 
+#Here no multiple comparisons are being made, safe to leave unadjusted
+
+emmeans(tceoh_model, pairwise ~ strain | day * dose, adjust = "tukey")
+#multiple comparisons are being made, using Tukey's
+
+emmeans(tceoh_model, pairwise ~ dose | day * strain, adjust = "none")
+#Here no multiple comparisons are being made, safe to leave unadjusted
+```
+
+``` {r split data by dose}
+solv_ctrl_only <- tceoh_normalized_data %>%
+  filter(dose == "Solvent Control")
+
+tceoh_only <- tceoh_normalized_data %>%
+  filter(dose == "5 mM TCEOH")
+```
+
+``` {r Two-Way ANOVAs, eval = FALSE}
+#Running a two-way ANOVA within the dose
+solv_only_model <- aov(percent_control ~ day * strain, data = solv_ctrl_only)
+
+summary(solv_only_model)
+#Nothing is significant
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(solv_only_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here. Probably significant bcause I percent control everything so the variance for the control is tighter.
+leveneTest(percent_control ~ day * strain, 
+           data = solv_ctrl_only,
+           center = median)
+
+tceoh_only_model <- aov(percent_control ~ day * strain, data = tceoh_only)
+
+summary(tceoh_only_model)
+#Everything is significant
+
+#Checking the normality of the residuals - data meets the normality assumption
+res <- residuals(tceoh_only_model)
+qqnorm(res)
+qqline(res)
+hist(res)
+
+#Levene's Test of ANOVA model to check assumption of equal variances, but ultimately central limit theorem should be fine here. Probably significant bcause I percent control everything so the variance for the control is tighter.
+leveneTest(percent_control ~ day * strain, 
+           data = tceoh_only,
+           center = median)
+
+#If I'm using estimated marginal means, not necessary to do two-way ANOVA but good to still check.
+```
+
+# Plotting - Normalized
+``` {r plotting the data}
+library(ggplot2)
+library(dplyr)
+
+# Summarize normalized data for plotting
+plot_norm_data_by_solvent <- normalized_by_control %>%
+  group_by(strain, day, dose) %>%
+  summarise(
+    mean_pct_ctrl = mean(percent_control, na.rm = TRUE),
+    sd_pct_ctrl = sd(percent_control, na.rm = TRUE),
+    n = n(),
+    se_pct_ctrl = sd_pct_ctrl / sqrt(n)
+  ) %>%
+  ungroup()
+```
+
+``` {r line plot for trends over days option - TCA}
+plot_norm_data_tca <- plot_norm_data_by_solvent %>%
+  filter(!dose %in% c("Vehicle Control", "Solvent Control", "5 mM TCEOH"))
+
+# Line Plot - trends across days per dose and per strain
+jpeg("tca_final.jpeg", units="in", width=8, height=5, res=300)
+ggplot(plot_norm_data_tca, aes(x = day, y = mean_pct_ctrl, color = dose, group = dose)) +
+  geom_point(size = 3.5, position = position_dodge(width = 0.35), shape = 16) +
+  geom_line(position = position_dodge(width = 0.35), size = 1) +
+  geom_hline(yintercept = 100, linetype = 'dashed') +
+  geom_errorbar(aes(ymin = mean_pct_ctrl - se_pct_ctrl, ymax = mean_pct_ctrl + se_pct_ctrl),
+                width = 0.1, position = position_dodge(width = 0.35), size = 0.8) +
+  facet_wrap( ~ strain) +
+  labs(title = "Trends of Normalized Eggs in Utero Across Days", x = "Day", y = "Percent Control of Eggs in Utero", color = "Dose") +
+  scale_color_brewer(palette = "Set2") +   # Prism-like color palette
+  scale_x_discrete(breaks = c(1, 2)) +
+  theme_minimal(base_size = 14) +
+  scale_y_continuous(
+    limits = c(0, 150),           # Set the minimum and maximum limits
+    breaks = seq(0, 150, by = 25)  # Set breaks every 5 units from 10 to 35
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major = element_line(color = "grey90"), # light grid lines
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(color = "black", size = 0.8),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.text = element_text(face = "bold")
+  )
+dev.off()
+```
+
+``` {r line plot for trends over days option - TCEOH}
+plot_norm_data_tceoh <- plot_norm_data_by_solvent %>%
+  filter(!dose %in% c("Vehicle Control", "Solvent Control", "10 mM TCA"))
+
+# Line Plot - trends across days per dose and per strain
+jpeg("tceoh_final.jpeg", units="in", width=8, height=5, res=300)
+ggplot(plot_norm_data_tceoh, aes(x = day, y = mean_pct_ctrl, color = dose, group = dose)) +
+  geom_point(size = 3.5, position = position_dodge(width = 0.35), shape = 16) +
+  geom_line(position = position_dodge(width = 0.35), size = 1) +
+  geom_hline(yintercept = 100, linetype = 'dashed') +
+  geom_errorbar(aes(ymin = mean_pct_ctrl - se_pct_ctrl, ymax = mean_pct_ctrl + se_pct_ctrl),
+                width = 0.1, position = position_dodge(width = 0.35), size = 0.8) +
+  facet_wrap( ~ strain) +
+  labs(title = "Trends of Normalized Eggs in Utero Across Days", x = "Day", y = "Percent Control of Eggs in Utero", color = "Dose") +
+  scale_color_brewer(palette = "Set1") +   # Prism-like color palette
+  scale_x_discrete(breaks = c(1, 2)) +
+  theme_minimal(base_size = 14) +
+  scale_y_continuous(
+    limits = c(0, 150),           # Set the minimum and maximum limits
+    breaks = seq(0, 150, by = 25) 
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    panel.grid.major = element_line(color = "grey90"), # light grid lines
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    axis.line = element_line(color = "black", size = 0.8),
+    strip.background = element_rect(fill = "grey95", color = NA),
+    strip.text = element_text(face = "bold")
+  )
+dev.off()
+```
+
+# Export Stats
+``` {r exporting all relevant stats}
+library(writexl)
+
+tidy_anova <- function(model) {
+  summary(model)[[1]] %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("term") %>%
+    mutate(term = trimws(term))
+}
+
+anova_tca_raw    <- tidy_anova(tca_raw_model)
+anova_tceoh_raw  <- tidy_anova(tceoh_raw_model)
+anova_tca_norm   <- tidy_anova(tca_model)
+anova_tceoh_norm <- tidy_anova(tceoh_model)
+
+emm_day_tceoh_contrasts    <- as.data.frame(emmeans(tceoh_model, pairwise ~ day | strain * dose)$contrasts)
+emm_strain_tceoh_contrasts <- as.data.frame(emmeans(tceoh_model, pairwise ~ strain | day * dose, adjust = "tukey")$contrasts)
+emm_dose_tceoh_contrasts   <- as.data.frame(emmeans(tceoh_model, pairwise ~ dose | day * strain)$contrasts)
+
+write_xlsx(
+  list(
+    anova_tca_raw     = anova_tca_raw,
+    anova_tceoh_raw   = anova_tceoh_raw,
+    anova_tca_norm    = anova_tca_norm,
+    anova_tceoh_norm  = anova_tceoh_norm,
+    emm_day_tceoh     = emm_day_tceoh_contrasts,
+    emm_strain_tceoh  = emm_strain_tceoh_contrasts,
+    emm_dose_tceoh    = emm_dose_tceoh_contrasts
+  ),
+  "eggs_in_utero_stats.xlsx"
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
